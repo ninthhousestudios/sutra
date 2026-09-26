@@ -528,6 +528,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0087_commit_file_count.sql"),
         true,
     ),
+    // Path qualifier on Rust path-expression refs (sutra/477). ephemeral_only:
+    // reindex recreates refs, so the ALTER must replay after it.
+    (
+        "0088_ref_qualifier",
+        include_str!("../../migrations/0088_ref_qualifier.sql"),
+        true,
+    ),
 ];
 
 impl Db {

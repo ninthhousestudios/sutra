@@ -1014,7 +1014,10 @@ impl SutraServer {
     #[tool(
         description = "Find dead symbols (zero inbound references) and unreachable files \
         (zero importers). Automatically excludes #[test]/#[bench] functions, items inside \
-        #[cfg(test)] modules, #[no_mangle]/FFI entrypoints, and integration test files."
+        #[cfg(test)] modules, #[no_mangle]/FFI entrypoints, integration test files, and \
+        trait-impl / @override members. Methods called with dot syntax count as live by \
+        name (no receiver types). Known misses: framework-registered items (macro \
+        attributes like #[tool]), Cargo package renames, Python hasattr/getattr dispatch."
     )]
     pub async fn sutra_dead(
         &self,

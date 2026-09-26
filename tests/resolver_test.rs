@@ -65,6 +65,7 @@ fn make_ref(name: &str, line: usize, context_kind: RefContextKind) -> ExtractedR
         context_kind,
         resolved_local_target: None,
         receiver: None,
+        qualifier: None,
     }
 }
 
@@ -768,6 +769,7 @@ fn make_ref_with_hint(
         context_kind,
         resolved_local_target: Some(hint.to_string()),
         receiver: None,
+        qualifier: None,
     }
 }
 
@@ -909,6 +911,7 @@ fn make_ref_with_type_tracking(name: &str, line: usize, class_name: &str) -> Ext
         context_kind: RefContextKind::Call,
         resolved_local_target: Some(format!("{TYPE_TRACKING_PREFIX}{class_name}")),
         receiver: Some("c".to_string()),
+        qualifier: None,
     }
 }
 
@@ -1106,5 +1109,157 @@ fn test_dart_receiver_call_prefers_method_falls_back_to_fn() {
 
     let fn_only = vec![sym(1, "resolve", "resolve", "function")];
     let resolved = resolve_lang(&[], &refs, &fn_only, &[], 0, "dart");
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
+}
+
+// --- sutra/477: path-qualified Rust refs ---
+
+fn make_qualified(name: &str, qualifier: &str, context_kind: RefContextKind) -> ExtractedRef {
+    ExtractedRef {
+        qualifier: Some(qualifier.to_string()),
+        ..make_ref(name, 10, context_kind)
+    }
+}
+
+fn resolve_with_paths(
+    refs: &[ExtractedRef],
+    all_symbols: &[SymbolEntry],
+    paths: &[(i64, &str)],
+    file_id: i64,
+) -> Vec<resolver::ResolvedRef> {
+    let index = resolver::SymbolIndex::build(all_symbols).with_file_paths(paths.iter().copied());
+    resolve_refs(&[], refs, &index, &[], file_id, "rust")
+}
+
+/// `tools::calls::handle()` binds the `handle` of the `calls` module, not the
+/// first of many same-named fns.
+#[test]
+fn test_rust_module_qualified_call_binds_that_module() {
+    let refs = vec![make_qualified(
+        "handle",
+        "tools::calls",
+        RefContextKind::Call,
+    )];
+    let all = vec![
+        sym_in_file(1, "handle", "handle", "function", 1),
+        sym_in_file(2, "handle", "handle", "function", 2),
+        sym_in_file(3, "handle", "handle", "function", 3),
+    ];
+    let paths = [
+        (1, "src/tools/dead.rs"),
+        (2, "src/tools/calls.rs"),
+        (3, "src/tools/refs/mod.rs"),
+    ];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::QualifiedPath)
+    );
+
+    let refs = vec![make_qualified(
+        "handle",
+        "super::refs",
+        RefContextKind::Call,
+    )];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(3),
+        "mod.rs names its directory"
+    );
+}
+
+/// `Config::new()` binds the method of that type, generics ignored.
+#[test]
+fn test_rust_type_qualified_call_binds_that_type() {
+    let refs = vec![
+        make_qualified("new", "Config", RefContextKind::Call),
+        make_qualified("new", "crate::fresh::Annotator", RefContextKind::Call),
+    ];
+    let all = vec![
+        sym(1, "Engine::new", "new", "method"),
+        sym(2, "Config::new", "new", "method"),
+        sym(3, "Annotator<'a>::new", "new", "method"),
+    ];
+    let resolved = resolve_with_paths(&refs, &all, &[], 9);
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+    assert_eq!(resolved[1].target_symbol_id, Some(3));
+}
+
+/// A path that leaves the workspace stays unresolved instead of falling back
+/// to a same-named workspace symbol.
+#[test]
+fn test_rust_external_path_stays_unresolved() {
+    let refs = vec![make_qualified(
+        "read_to_string",
+        "std::fs",
+        RefContextKind::Call,
+    )];
+    let all = vec![sym_in_file(
+        1,
+        "read_to_string",
+        "read_to_string",
+        "function",
+        1,
+    )];
+    let resolved = resolve_with_paths(&refs, &all, &[(1, "src/io.rs")], 9);
+    assert_eq!(resolved[0].target_symbol_id, None);
+}
+
+/// `crate::db::helper` where `helper` lives in `db/graph.rs` and is re-exported
+/// by `db/mod.rs` (`pub use graph::helper` or `pub use graph::*`).
+#[test]
+fn test_rust_reexported_child_item_resolves() {
+    let refs = vec![make_qualified("helper", "crate::db", RefContextKind::Call)];
+    let all = vec![
+        sym_in_file(1, "helper", "helper", "function", 1),
+        sym_in_file(2, "helper", "helper", "function", 2),
+    ];
+    let paths = [(1, "src/tools/helper.rs"), (2, "src/db/graph.rs")];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+}
+
+/// A crate root is named for its package directory, `-` read as `_`.
+#[test]
+fn test_rust_crate_qualified_path_binds_crate_root() {
+    let refs = vec![make_qualified("open", "chat_store", RefContextKind::Call)];
+    let all = vec![
+        sym_in_file(1, "open", "open", "function", 1),
+        sym_in_file(2, "open", "open", "function", 2),
+    ];
+    let paths = [(1, "server/src/db.rs"), (2, "chat-store/src/lib.rs")];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+}
+
+/// A Rust value read binds a const, never a same-named field.
+#[test]
+fn test_rust_read_binds_const_not_field() {
+    let refs = vec![make_ref("LIMIT", 10, RefContextKind::Read)];
+    let all = vec![
+        sym(1, "Opts::LIMIT", "LIMIT", "field"),
+        sym(2, "LIMIT", "LIMIT", "const"),
+    ];
+    let resolved = resolve(&[], &refs, &all, &[], 0);
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+}
+
+/// `impl Trait for Foo` is in scope under `Foo`; a type use of `Foo` must bind
+/// the struct (here in another crate), not the impl block.
+#[test]
+fn test_rust_type_use_hint_skips_impl_block() {
+    let refs = vec![make_ref_with_hint(
+        "Foo",
+        10,
+        RefContextKind::TypeUse,
+        "Foo",
+    )];
+    let all = vec![
+        sym_in_file(1, "Foo", "Foo", "struct", 2),
+        sym_in_file(2, "Foo", "Foo", "impl", 9),
+    ];
+    let resolved = resolve(&[], &refs, &all, &[], 9);
     assert_eq!(resolved[0].target_symbol_id, Some(1));
 }

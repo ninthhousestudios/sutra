@@ -512,6 +512,7 @@ fn test_symbol_graph_cache_invalidates_after_ref_resolution() {
             resolution_method: None,
             resolved_local_target: None,
             receiver: None,
+            qualifier: None,
         }],
     )
     .unwrap();
@@ -1337,6 +1338,7 @@ fn test_replace_file_data_atomic() {
         context_kind: "call",
         resolved_local_target: None,
         receiver: None,
+        qualifier: None,
     }];
 
     let (file_id, sym_count) = db

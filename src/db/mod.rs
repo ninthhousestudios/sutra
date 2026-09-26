@@ -350,6 +350,7 @@ pub struct InsertRefParams<'a> {
     pub context_kind: &'a str,
     pub resolved_local_target: Option<&'a str>,
     pub receiver: Option<&'a str>,
+    pub qualifier: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -363,6 +364,7 @@ pub struct RefRow {
     pub context_kind: String,
     pub resolved_local_target: Option<String>,
     pub receiver: Option<String>,
+    pub qualifier: Option<String>,
 }
 
 pub struct ResolvedRefRow<'a> {
@@ -374,6 +376,7 @@ pub struct ResolvedRefRow<'a> {
     pub resolution_method: Option<&'a str>,
     pub resolved_local_target: Option<&'a str>,
     pub receiver: Option<&'a str>,
+    pub qualifier: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -1116,8 +1119,8 @@ impl Db {
         // Insert refs.
         for rf in refs {
             conn.prepare_cached(
-                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver)
-                 VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver, qualifier)
+                 VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?
             .execute(params![
                 file_id,
@@ -1126,7 +1129,8 @@ impl Db {
                 rf.col,
                 rf.context_kind,
                 rf.resolved_local_target,
-                rf.receiver
+                rf.receiver,
+                rf.qualifier
             ])?;
         }
 
@@ -1516,6 +1520,14 @@ impl Db {
 
     /// Find symbols with zero inbound references (potential dead code).
     /// Returns (qualified_name, file_path, kind, start_line, visibility).
+    ///
+    /// Test code, FFI entry points and trait-impl / `@override` members
+    /// (flags & 15) are never dead. A method is also live when any unqualified
+    /// call (`x.name()`) binds to a same-named method: without receiver types
+    /// the resolver's pick among same-named methods is a guess, and so is
+    /// trait dispatch, so liveness for method-call syntax is by name. A symbol
+    /// whose same-file twin (same qualified name: a Dart getter/setter pair,
+    /// `#[cfg]` variants of one item) is referenced is live too.
     #[allow(clippy::type_complexity)]
     pub fn find_dead_symbols(
         &self,
@@ -1530,10 +1542,23 @@ impl Db {
              JOIN files f ON s.file_id = f.id
              LEFT JOIN refs r ON r.target_symbol_id = s.id
              WHERE r.id IS NULL
+               AND NOT EXISTS (SELECT 1 FROM symbols twin
+                               JOIN refs tr ON tr.target_symbol_id = twin.id
+                               WHERE twin.file_id = s.file_id
+                                 AND twin.qualified_name = s.qualified_name
+                                 AND twin.id != s.id)
                AND s.kind IN ('function','method','struct','enum','trait',
                               'type_alias','class','mixin','const','static')
                AND s.short_name != 'main'
-               AND (s.flags & 7) = 0
+               AND f.path NOT LIKE '%/tests/%'
+               AND (s.flags & 15) = 0
+               AND NOT (s.kind = 'method'
+                        AND EXISTS (SELECT 1 FROM refs r2
+                                    JOIN symbols s2 ON s2.id = r2.target_symbol_id
+                                    WHERE s2.short_name = s.short_name
+                                      AND s2.kind = 'method'
+                                      AND r2.context_kind = 'call'
+                                      AND r2.qualifier IS NULL))
                AND f.path NOT LIKE 'tests/%'
                AND (?1 = 1 OR s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))
                AND (?2 IS NULL OR f.path LIKE ?2)
@@ -1564,6 +1589,8 @@ impl Db {
                AND path NOT LIKE '%/lib.rs'
                AND path NOT LIKE '%/main.rs'
                AND path NOT LIKE '%/mod.rs'
+               AND path != 'build.rs'
+               AND path NOT LIKE '%/build.rs'
                AND path NOT LIKE 'src/bin/%'
                AND path NOT LIKE 'lib/%'
                AND path NOT LIKE 'tests/%'
@@ -1739,7 +1766,7 @@ impl Db {
     pub fn find_refs_to_symbol(&self, symbol_id: i64) -> Result<Vec<RefRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver
+            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver, qualifier
              FROM refs WHERE target_symbol_id = ?1",
         )?;
         let rows: rusqlite::Result<Vec<RefRow>> =
@@ -1751,7 +1778,7 @@ impl Db {
     pub fn find_refs_in_file(&self, file_id: i64) -> Result<Vec<RefRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver
+            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver, qualifier
              FROM refs WHERE file_id = ?1",
         )?;
         let rows: rusqlite::Result<Vec<RefRow>> =
@@ -1815,8 +1842,8 @@ impl Db {
         conn.execute("DELETE FROM refs WHERE file_id = ?1", params![file_id])?;
         for r in refs {
             conn.execute(
-                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolution_method, resolved_local_target, receiver)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolution_method, resolved_local_target, receiver, qualifier)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     file_id,
                     r.target_symbol_id,
@@ -1826,7 +1853,8 @@ impl Db {
                     r.context_kind,
                     r.resolution_method,
                     r.resolved_local_target,
-                    r.receiver
+                    r.receiver,
+                    r.qualifier
                 ],
             )?;
         }
@@ -2429,6 +2457,7 @@ fn map_ref_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RefRow> {
         context_kind: row.get(6)?,
         resolved_local_target: row.get(7)?,
         receiver: row.get(8)?,
+        qualifier: row.get(9)?,
     })
 }
 

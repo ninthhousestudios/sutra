@@ -792,6 +792,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 context_kind,
                 resolved_local_target: None,
                 receiver,
+                qualifier: None,
             });
         } else if node.kind() == "identifier"
             && name.starts_with('_')
@@ -812,8 +813,28 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 context_kind: RefContextKind::Read,
                 resolved_local_target: None,
                 receiver: None,
+                qualifier: None,
             });
         }
+    }
+
+    // `'$_name'` string interpolation parses the name as an
+    // `identifier_dollar_escaped` token, so the identifier arm above never
+    // sees it (`'${_name}'` parses as a plain identifier and does).
+    if node.kind() == "identifier_dollar_escaped"
+        && let Ok(text) = node.utf8_text(src)
+        && let name = text.trim_start_matches('$')
+        && name.starts_with('_')
+    {
+        refs.push(ExtractedRef {
+            name: name.to_string(),
+            line: node.start_position().row + 1,
+            col: node.start_position().column + (text.len() - name.len()),
+            context_kind: RefContextKind::Read,
+            resolved_local_target: None,
+            receiver: None,
+            qualifier: None,
+        });
     }
 
     if cursor.goto_first_child() {

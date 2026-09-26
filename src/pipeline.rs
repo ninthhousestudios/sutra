@@ -483,6 +483,7 @@ fn resolve_file_refs(
             context_kind: parse_ref_context_kind(&r.context_kind),
             resolved_local_target: r.resolved_local_target.clone(),
             receiver: r.receiver.clone(),
+            qualifier: r.qualifier.clone(),
         })
         .collect();
 
@@ -525,6 +526,7 @@ fn resolve_file_refs(
             resolution_method: rr.resolution_method.map(|m| m.as_str()),
             resolved_local_target: rr.original.resolved_local_target.as_deref(),
             receiver: rr.original.receiver.as_deref(),
+            qualifier: rr.original.qualifier.as_deref(),
         })
         .collect();
 
@@ -539,6 +541,7 @@ fn resolve_file_refs(
         resolution_method: None,
         resolved_local_target: r.resolved_local_target.as_deref(),
         receiver: r.receiver.as_deref(),
+        qualifier: r.qualifier.as_deref(),
     }));
 
     db.replace_refs_and_clear_resolution(file_id, &ref_rows)?;
@@ -938,7 +941,9 @@ fn resolve_references(db: &Db, workspace_root: &Path) -> Result<(i64, i64, i64)>
     let resolution_set: HashSet<i64> = resolution_ids.into_iter().collect();
 
     let all_db_symbols = db.all_symbols_summary()?;
-    let symbol_index = resolver::SymbolIndex::build(&all_db_symbols);
+    let all_files = db.all_files()?;
+    let symbol_index = resolver::SymbolIndex::build(&all_db_symbols)
+        .with_file_paths(all_files.iter().map(|f| (f.id, &*f.path)));
     log_phase_rss("post_parse:symbols_loaded");
     let mut resolved_count: i64 = 0;
     let mut unresolved_count: i64 = 0;

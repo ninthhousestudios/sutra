@@ -1356,3 +1356,33 @@ fn test_dart_catch_binding_not_read_ref() {
         "`_err` should read once (the use), not also the catch binding"
     );
 }
+
+/// sutra/477: a private const read only through `'$_name'` interpolation must
+/// produce a Read ref, like the `'${_name}'` form already does.
+#[test]
+fn test_dart_dollar_interpolation_emits_read_ref() {
+    let src = r#"
+const _base = 'https://example.org';
+const _other = 'x';
+String url(String q) => '$_base?q=$q' '${_other}/y';
+"#;
+    let result = parser::parse_file(src, "dart", "lib/url.dart").unwrap();
+    let reads: Vec<&str> = result
+        .references
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Read)
+        .map(|r| r.name.as_str())
+        .collect();
+    assert!(
+        reads.contains(&"_base"),
+        "'$_base' should be a Read ref, got {reads:?}"
+    );
+    assert!(
+        reads.contains(&"_other"),
+        "'${{_other}}' should be a Read ref, got {reads:?}"
+    );
+    assert!(
+        !reads.contains(&"q"),
+        "public locals are not Read refs, got {reads:?}"
+    );
+}

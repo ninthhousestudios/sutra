@@ -750,6 +750,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                         context_kind,
                         resolved_local_target: None,
                         receiver: None,
+                        qualifier: None,
                     });
                 }
             }
@@ -765,6 +766,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                         context_kind,
                         resolved_local_target: None,
                         receiver: None,
+                        qualifier: None,
                     });
                 }
             }
@@ -789,6 +791,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                     context_kind,
                     resolved_local_target: None,
                     receiver: None,
+                    qualifier: None,
                 });
             }
         }

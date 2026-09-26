@@ -123,6 +123,10 @@ fn build_scopes_recursive(
                         start_line: body.start_position().row + 1,
                         end_line: body.end_position().row + 1,
                     });
+                    if let Some(params) = child.child_by_field_name("parameters") {
+                        let line = body.start_position().row + 1;
+                        collect_pattern_names(params, src, line, &mut arena[idx].bindings);
+                    }
                     collect_let_bindings(body, src, &mut arena[idx].bindings);
                     build_scopes_recursive(body, src, idx, arena, symbols);
                 }
@@ -141,6 +145,21 @@ fn build_scopes_recursive(
                 build_scopes_recursive(child, src, idx, arena, symbols);
             }
             _ => {
+                // Closure parameters and `for`/`match`/`if let` patterns bind
+                // from their own line to the end of the enclosing scope. That
+                // over-extends their reach, which only ever leaves a ref
+                // unresolved; it never binds one to the wrong item.
+                let pattern = match child.kind() {
+                    "closure_expression" => child.child_by_field_name("parameters"),
+                    "for_expression" | "match_arm" | "let_condition" => {
+                        child.child_by_field_name("pattern")
+                    }
+                    _ => None,
+                };
+                if let Some(pat) = pattern {
+                    let line = child.start_position().row + 1;
+                    collect_pattern_names(pat, src, line, &mut arena[parent_idx].bindings);
+                }
                 build_scopes_recursive(child, src, parent_idx, arena, symbols);
             }
         }
@@ -166,14 +185,27 @@ fn collect_let_bindings(block: Node, src: &[u8], bindings: &mut Vec<(String, usi
 
 fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(String, usize)>) {
     match pat.kind() {
-        "identifier" => {
+        "identifier" | "shorthand_field_identifier" => {
             if let Ok(name) = pat.utf8_text(src)
                 && name != "_"
             {
                 names.push((name.to_string(), line));
             }
         }
-        "tuple_pattern" | "slice_pattern" | "tuple_struct_pattern" | "struct_pattern" => {
+        "tuple_pattern"
+        | "slice_pattern"
+        | "tuple_struct_pattern"
+        | "struct_pattern"
+        | "parameters"
+        | "parameter"
+        | "closure_parameters"
+        | "match_pattern"
+        | "ref_pattern"
+        | "mut_pattern"
+        | "captured_pattern"
+        | "or_pattern"
+        | "field_pattern"
+        | "reference_pattern" => {
             let mut cursor = pat.walk();
             for child in pat.children(&mut cursor) {
                 collect_pattern_names(child, src, line, names);
@@ -200,12 +232,19 @@ fn find_tightest_scope(arena: &[Scope], line: usize) -> usize {
 
 fn resolve_refs_locally(arena: &[Scope], symbols: &[&ExtractedSymbol], refs: &mut [ExtractedRef]) {
     for r in refs.iter_mut() {
-        if matches!(r.context_kind, RefContextKind::Import) {
+        if matches!(r.context_kind, RefContextKind::Import)
+            || r.qualifier
+                .as_deref()
+                .is_some_and(|q| q != "Self" && q != "self")
+        {
             continue;
         }
         let scope_idx = find_tightest_scope(arena, r.line);
+        // `x.name()` looks `name` up on the receiver's type: a local named
+        // `name` cannot shadow it.
+        let method_call = r.receiver.is_some();
         r.resolved_local_target =
-            resolve_in_scope_chain(arena, symbols, scope_idx, &r.name, r.line);
+            resolve_in_scope_chain(arena, symbols, scope_idx, &r.name, r.line, method_call);
     }
 }
 
@@ -215,13 +254,15 @@ fn resolve_in_scope_chain(
     start: usize,
     name: &str,
     ref_line: usize,
+    method_call: bool,
 ) -> Option<String> {
     let mut idx = start;
     loop {
         let scope = &arena[idx];
 
         // Let-bindings only shadow refs that appear on or after the declaration line.
-        if matches!(scope.kind, ScopeKind::Function | ScopeKind::Block)
+        if !method_call
+            && matches!(scope.kind, ScopeKind::Function | ScopeKind::Block)
             && scope
                 .bindings
                 .iter()
@@ -245,6 +286,34 @@ fn resolve_in_scope_chain(
     }
 }
 
+/// A bare value read is kept only when the name reaches a definition: an item
+/// in the file's scope chain, a `use` import, or a SCREAMING_CASE name (a
+/// const or static, possibly glob-imported). Every other bare identifier is a
+/// local variable, and storing it would multiply the refs table for nothing.
+fn is_meaningful_read(r: &ExtractedRef, imports: &[ExtractedImport]) -> bool {
+    if r.context_kind != RefContextKind::Read || r.qualifier.is_some() {
+        return true;
+    }
+    match r.resolved_local_target.as_deref() {
+        Some(LOCAL_BINDING_SENTINEL) => false,
+        Some(_) => true,
+        None => {
+            let name = r.name.as_str();
+            imports.iter().any(|i| {
+                i.alias.as_deref() == Some(name) || i.raw_path.rsplit("::").next() == Some(name)
+            }) || is_screaming_case(name)
+        }
+    }
+}
+
+fn is_screaming_case(name: &str) -> bool {
+    name.len() > 1
+        && name.chars().any(|c| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 // ---------------------------------------------------------------------------
 
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
@@ -263,6 +332,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 
     let mut imports = Vec::new();
     collect_imports(&mut imports, root, src);
+    references.retain(|r| is_meaningful_read(r, &imports));
 
     // Imports inside `#[cfg(test)]` are not production dependencies: an edge
     // they create is invisible to a release build, so constraint evaluation
@@ -302,11 +372,8 @@ fn extract_flags(node: Node, src: &[u8]) -> u32 {
     while let Some(s) = sib {
         if s.kind() == "attribute_item" {
             let text = s.utf8_text(src).unwrap_or("");
-            if text.contains("#[test]")
-                || text.contains("tokio::test")
-                || text.contains("async_std::test")
-                || text.contains("#[bench]")
-            {
+            let (path, _) = attribute_path_and_args(text);
+            if is_test_fn_attribute(path) || path == "bench" {
                 flags |= FLAG_TEST;
             }
             if text.contains("no_mangle")
@@ -430,6 +497,13 @@ fn collect_symbols_inner(
                         let mut ctx = name_context.to_vec();
                         ctx.push(impl_name);
                         sym.children = collect_symbols_inner(body, src, &ctx, cfg_test);
+                    }
+                    // Items of `impl Trait for T` exist because the trait
+                    // requires them; they are reached by dispatch, not by name.
+                    if child.child_by_field_name("trait").is_some() {
+                        for item in &mut sym.children {
+                            item.flags |= FLAG_OVERRIDE;
+                        }
                     }
                     symbols.push(sym);
                 }
@@ -911,42 +985,78 @@ fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
 /// Collect identifier and type_identifier references, skipping definition names.
 fn collect_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
     let mut cursor = node.walk();
-    walk_refs_recursive(refs, &mut cursor, src);
+    let mut ancestors = Vec::new();
+    walk_refs_recursive(refs, &mut cursor, src, &mut ancestors, false);
 }
 
-fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, src: &[u8]) {
+/// Parent of the node whose ancestors are `anc` (outermost first); `up(anc, 1)`
+/// is the grandparent. The walk keeps this stack because tree-sitter's
+/// `Node::parent` re-descends from the root, which made per-identifier
+/// ancestor lookups the dominant extraction cost.
+fn up<'t>(anc: &[Node<'t>], levels: usize) -> Option<Node<'t>> {
+    anc.len().checked_sub(levels + 1).map(|i| anc[i])
+}
+
+/// `in_use` is true below a `use_declaration`.
+fn walk_refs_recursive<'t>(
+    refs: &mut Vec<ExtractedRef>,
+    cursor: &mut TreeCursor<'t>,
+    src: &[u8],
+    anc: &mut Vec<Node<'t>>,
+    in_use: bool,
+) {
     let node = cursor.node();
     let kind = node.kind();
 
     if (kind == "identifier" || kind == "type_identifier")
-        && !is_definition_name(node)
+        && !is_definition_name(node, anc)
         && let Ok(name) = node.utf8_text(src)
+        && let Some(PathRef {
+            context_kind,
+            qualifier,
+            receiver,
+        }) = classify_ref(node, anc, src, in_use)
     {
-        let context_kind = classify_ref_context(node);
-        if context_kind != RefContextKind::Other {
-            refs.push(ExtractedRef {
-                name: name.to_string(),
-                line: node.start_position().row + 1,
-                col: node.start_position().column,
-                context_kind,
-                resolved_local_target: None,
-                receiver: None,
-            });
-        }
+        refs.push(ExtractedRef {
+            name: name.to_string(),
+            line: node.start_position().row + 1,
+            col: node.start_position().column,
+            context_kind,
+            resolved_local_target: None,
+            receiver,
+            qualifier,
+        });
+    }
+
+    // A `macro_rules!` body is a template over metavariables, not code.
+    if kind == "macro_definition" {
+        return;
+    }
+    // Rust 2021 inline format args: `format!("{LIMIT}")` reads `LIMIT`.
+    if kind == "string_literal" && up(anc, 0).is_some_and(|p| p.kind() == "token_tree") {
+        push_format_arg_refs(refs, node, src);
+    }
+    // `#[serde(default = "path")]` and friends name a function in a string;
+    // nothing else in an attribute is a reference.
+    if matches!(kind, "attribute_item" | "inner_attribute_item") {
+        push_serde_fn_refs(refs, node, src);
+        return;
     }
 
     // Method names in call position: foo.method()
     if kind == "field_identifier"
-        && is_method_call_name(node)
+        && is_method_call_name(anc)
         && let Ok(name) = node.utf8_text(src)
     {
-        // Capture the receiver identifier from the field_expression's value child.
-        let receiver = node
-            .parent()
+        // Capture the receiver identifier from the field_expression's value
+        // child; an expression receiver (`a.b().name()`) is recorded as "" so
+        // the ref still reads as method-call syntax.
+        let receiver = up(anc, 0)
             .and_then(|fe| fe.child_by_field_name("value"))
-            .filter(|v| v.kind() == "identifier" || v.kind() == "self")
-            .and_then(|v| v.utf8_text(src).ok())
-            .map(|s| s.to_string());
+            .map(|v| match v.kind() {
+                "identifier" | "self" => v.utf8_text(src).unwrap_or_default().to_string(),
+                _ => String::new(),
+            });
         refs.push(ExtractedRef {
             name: name.to_string(),
             line: node.start_position().row + 1,
@@ -954,24 +1064,352 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
             context_kind: RefContextKind::Call,
             resolved_local_target: None,
             receiver,
+            qualifier: None,
         });
     }
 
     // Recurse into children
+    let child_in_use = in_use || kind == "use_declaration";
     if cursor.goto_first_child() {
+        anc.push(node);
         loop {
-            walk_refs_recursive(refs, cursor, src);
+            walk_refs_recursive(refs, cursor, src, anc, child_in_use);
             if !cursor.goto_next_sibling() {
                 break;
             }
         }
+        anc.pop();
         cursor.goto_parent();
     }
 }
 
+/// How an identifier is referenced: its context, the path before it when it is
+/// the last segment of a path expression, and the receiver of a method call.
+struct PathRef {
+    context_kind: RefContextKind,
+    qualifier: Option<String>,
+    receiver: Option<String>,
+}
+
+impl PathRef {
+    fn bare(context_kind: RefContextKind) -> Self {
+        Self {
+            context_kind,
+            qualifier: None,
+            receiver: None,
+        }
+    }
+}
+
+/// Classify an identifier or type identifier, or `None` when the position
+/// references nothing (patterns, attributes, macro names, declarations).
+fn classify_ref(node: Node, anc: &[Node], src: &[u8], in_use: bool) -> Option<PathRef> {
+    let parent = up(anc, 0)?;
+    if node.kind() == "identifier" {
+        match parent.kind() {
+            "scoped_identifier" if !in_use => {
+                return classify_path_segment(node, anc, src);
+            }
+            "generic_function" if is_call_function(parent, &anc[..anc.len() - 1]) => {
+                return Some(PathRef::bare(RefContextKind::Call));
+            }
+            "token_tree" => return classify_token_tree_ident(node, src),
+            _ => {}
+        }
+    }
+    match classify_ref_context(node, anc, in_use) {
+        RefContextKind::Other => (node.kind() == "identifier" && is_value_position(node, parent))
+            .then(|| PathRef::bare(RefContextKind::Read)),
+        context_kind => Some(PathRef::bare(context_kind)),
+    }
+}
+
+/// Whether `node` (with ancestors `anc`) is the callee of a `call_expression`,
+/// directly or through a turbofish (`f::<T>()`).
+fn is_call_function(node: Node, anc: &[Node]) -> bool {
+    up(anc, 0).is_some_and(|p| match p.kind() {
+        "call_expression" => p
+            .child_by_field_name("function")
+            .is_some_and(|f| f.id() == node.id()),
+        "generic_function" => is_call_function(p, &anc[..anc.len() - 1]),
+        _ => false,
+    })
+}
+
+/// An identifier inside a `scoped_identifier` path expression. The last
+/// segment is the reference, qualified by the path before it
+/// (`tools::calls::handle()`, `Config::new()`, `Self::LIMIT`); an earlier
+/// segment is a type use when it is capitalised (`Config`), else a module.
+fn classify_path_segment(node: Node, anc: &[Node], src: &[u8]) -> Option<PathRef> {
+    let scoped = up(anc, 0)?;
+    let is_name = scoped
+        .child_by_field_name("name")
+        .is_some_and(|n| n.id() == node.id());
+    let outer = up(anc, 1)?;
+    if !is_name || outer.kind() == "scoped_identifier" {
+        return type_path_segment(node, src);
+    }
+    let context_kind = match outer.kind() {
+        "call_expression" | "generic_function"
+            if is_call_function(scoped, &anc[..anc.len() - 1]) =>
+        {
+            RefContextKind::Call
+        }
+        "macro_invocation" | "match_pattern" => return None,
+        k if k.ends_with("_pattern") => return None,
+        _ => RefContextKind::Read,
+    };
+    let qualifier = scoped
+        .child_by_field_name("path")
+        .and_then(|p| p.utf8_text(src).ok())
+        .filter(|t| !t.starts_with('<'))
+        .map(strip_generic_args);
+    Some(PathRef {
+        context_kind,
+        qualifier,
+        receiver: None,
+    })
+}
+
+/// A non-final path segment: `Config` in `Config::new()` names a type.
+fn type_path_segment(node: Node, src: &[u8]) -> Option<PathRef> {
+    let text = node.utf8_text(src).ok()?;
+    (text.starts_with(char::is_uppercase) && text != "Self")
+        .then(|| PathRef::bare(RefContextKind::TypeUse))
+}
+
+/// Drop generic arguments from a path: `Vec::<u8>` and `Foo<T>` become `Vec`
+/// and `Foo`, and `Annotator<'a>::new` becomes `Annotator::new`.
+pub(crate) fn strip_generic_args(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut depth = 0usize;
+    for c in path.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim_end_matches("::").replace("::::", "::")
+}
+
+/// Whether `node` is an expression operand that reads a value: a const or
+/// static, or a function passed as a value. Binding and declaration positions
+/// return false.
+fn is_value_position(node: Node, parent: Node) -> bool {
+    let is_field = |field: &str| {
+        parent
+            .child_by_field_name(field)
+            .is_some_and(|n| n.id() == node.id())
+    };
+    match parent.kind() {
+        "arguments"
+        | "binary_expression"
+        | "unary_expression"
+        | "reference_expression"
+        | "return_expression"
+        | "break_expression"
+        | "array_expression"
+        | "tuple_expression"
+        | "index_expression"
+        | "range_expression"
+        | "parenthesized_expression"
+        | "try_expression"
+        | "await_expression"
+        | "block"
+        | "if_expression"
+        | "while_expression"
+        | "closure_expression"
+        | "assignment_expression"
+        | "compound_assignment_expr"
+        | "shorthand_field_initializer" => true,
+        "let_declaration"
+        | "const_item"
+        | "static_item"
+        | "field_initializer"
+        | "field_expression"
+        | "for_expression"
+        | "match_expression"
+        | "match_arm"
+        | "let_condition"
+        | "type_cast_expression" => is_field("value"),
+        _ => false,
+    }
+}
+
+/// An identifier inside a macro invocation's token tree (`format!`, `json!`,
+/// `assert!`). The tree is unparsed tokens, so the role is read from the
+/// neighbouring punctuation: `f(` is a call, `a::b` a path, `x.m(` a method
+/// call, and a lone identifier a value read.
+fn classify_token_tree_ident(node: Node, src: &[u8]) -> Option<PathRef> {
+    let next = node.next_sibling();
+    let next_kind = next.map(|n| n.kind());
+    if matches!(next_kind, Some("::")) {
+        return type_path_segment(node, src);
+    }
+    // `name: value` keys, `name!` nested macros.
+    if matches!(next_kind, Some(":" | "!")) {
+        return None;
+    }
+    let calls = next.is_some_and(|n| {
+        n.kind() == "token_tree" && n.child(0).is_some_and(|open| open.kind() == "(")
+    });
+    let context_kind = if calls {
+        RefContextKind::Call
+    } else {
+        RefContextKind::Read
+    };
+    let prev = node.prev_sibling();
+    match prev.map(|p| p.kind()) {
+        Some(".") => {
+            if !calls {
+                return None;
+            }
+            let receiver = prev
+                .and_then(|dot| dot.prev_sibling())
+                .filter(|r| matches!(r.kind(), "identifier" | "self"))
+                .and_then(|r| r.utf8_text(src).ok())
+                .unwrap_or_default()
+                .to_string();
+            Some(PathRef {
+                context_kind,
+                qualifier: None,
+                receiver: Some(receiver),
+            })
+        }
+        Some("::") => {
+            let mut segments = Vec::new();
+            let mut sep = prev;
+            while let Some(colons) = sep.filter(|s| s.kind() == "::") {
+                let Some(seg) = colons
+                    .prev_sibling()
+                    .filter(|p| matches!(p.kind(), "identifier" | "self" | "super" | "crate"))
+                else {
+                    break;
+                };
+                segments.push(seg.utf8_text(src).ok()?);
+                sep = seg.prev_sibling();
+            }
+            if segments.is_empty() {
+                return None;
+            }
+            segments.reverse();
+            Some(PathRef {
+                context_kind,
+                qualifier: Some(segments.join("::")),
+                receiver: None,
+            })
+        }
+        _ => Some(PathRef::bare(context_kind)),
+    }
+}
+
+/// Emit a `Read` ref for each `{ident}` / `{ident:spec}` placeholder in a
+/// macro's string literal. `{{` is an escaped brace, and positional or
+/// expression placeholders (`{}`, `{0}`) name nothing.
+fn push_format_arg_refs(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
+    let Ok(text) = node.utf8_text(src) else {
+        return;
+    };
+    let start = node.start_position();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'{' {
+            i += 1;
+            continue;
+        }
+        if bytes.get(i + 1) == Some(&b'{') {
+            i += 2;
+            continue;
+        }
+        let body_start = i + 1;
+        let body_len = text[body_start..]
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(text.len() - body_start);
+        let ident = &text[body_start..body_start + body_len];
+        let closes = matches!(bytes.get(body_start + body_len), Some(b'}' | b':'));
+        if closes && ident.starts_with(|c: char| c.is_alphabetic() || c == '_') && ident != "_" {
+            let before = &text[..i];
+            let newlines = before.matches('\n').count();
+            let col = match before.rfind('\n') {
+                Some(nl) => i - nl - 1,
+                None => start.column + i,
+            };
+            refs.push(ExtractedRef {
+                name: ident.to_string(),
+                line: start.row + 1 + newlines,
+                col,
+                context_kind: RefContextKind::Read,
+                resolved_local_target: None,
+                receiver: None,
+                qualifier: None,
+            });
+        }
+        i = body_start + body_len;
+    }
+}
+
+/// Serde keys whose string value is a path to a function.
+const SERDE_FN_KEYS: &[&str] = &[
+    "default",
+    "serialize_with",
+    "deserialize_with",
+    "skip_serializing_if",
+    "getter",
+];
+
+/// Emit a `Call` ref for each function a `#[serde(...)]` attribute names in
+/// a string (`default = "one"`, `skip_serializing_if = "Option::is_none"`).
+fn push_serde_fn_refs(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
+    let Ok(text) = node.utf8_text(src) else {
+        return;
+    };
+    if !text.contains("serde") {
+        return;
+    }
+    for key in SERDE_FN_KEYS {
+        let mut rest = text;
+        while let Some(pos) = rest.find(key) {
+            let after = rest[pos + key.len()..].trim_start();
+            let preceded_by_ident = rest[..pos]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            rest = &rest[pos + key.len()..];
+            if preceded_by_ident {
+                continue;
+            }
+            let Some(value) = after
+                .strip_prefix('=')
+                .map(str::trim_start)
+                .and_then(|v| v.strip_prefix('"'))
+                .and_then(|v| v.split_once('"'))
+                .map(|(path, _)| path)
+            else {
+                continue;
+            };
+            let (qualifier, name) = match value.rsplit_once("::") {
+                Some((q, n)) => (Some(q.to_string()), n),
+                None => (None, value),
+            };
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind: RefContextKind::Call,
+                resolved_local_target: None,
+                receiver: None,
+                qualifier,
+            });
+        }
+    }
+}
+
 /// Returns true if this node is the `name` child of a definition node.
-fn is_definition_name(node: Node) -> bool {
-    if let Some(parent) = node.parent() {
+fn is_definition_name(node: Node, anc: &[Node]) -> bool {
+    if let Some(parent) = up(anc, 0) {
         let parent_kind = parent.kind();
         let is_def = matches!(
             parent_kind,
@@ -996,22 +1434,20 @@ fn is_definition_name(node: Node) -> bool {
     false
 }
 
-fn is_method_call_name(node: Node) -> bool {
-    node.parent()
-        .filter(|p| p.kind() == "field_expression")
-        .and_then(|p| p.parent())
-        .is_some_and(|gp| gp.kind() == "call_expression")
+fn is_method_call_name(anc: &[Node]) -> bool {
+    up(anc, 0).is_some_and(|p| p.kind() == "field_expression")
+        && up(anc, 1).is_some_and(|gp| gp.kind() == "call_expression")
 }
 
 /// Classify a reference by its parent context.
-fn classify_ref_context(node: Node) -> RefContextKind {
-    if let Some(parent) = node.parent() {
+fn classify_ref_context(node: Node, anc: &[Node], in_use: bool) -> RefContextKind {
+    if let Some(parent) = up(anc, 0) {
         let pk = parent.kind();
         match pk {
             "call_expression" => return RefContextKind::Call,
             "use_declaration" | "use_as_clause" | "scoped_identifier" | "use_wildcard"
             | "use_list" | "scoped_use_list"
-                if is_inside_use(node) =>
+                if in_use =>
             {
                 return RefContextKind::Import;
             }
@@ -1023,7 +1459,7 @@ fn classify_ref_context(node: Node) -> RefContextKind {
 
         // Construction: only type_identifier nodes that are the name of a struct_expression.
         // Covers Foo { .. }, inner::Foo { .. }, and Foo::<T> { .. }.
-        if node.kind() == "type_identifier" && is_struct_expression_name(node) {
+        if node.kind() == "type_identifier" && is_struct_expression_name(anc) {
             return RefContextKind::Construction;
         }
 
@@ -1055,27 +1491,13 @@ fn classify_ref_context(node: Node) -> RefContextKind {
 
 /// Walk ancestors from a type_identifier to see if it's the name of a struct_expression.
 /// Handles: Foo { .. }, inner::Foo { .. }, Foo::<T> { .. }, inner::Foo::<T> { .. }.
-fn is_struct_expression_name(node: Node) -> bool {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
+fn is_struct_expression_name(anc: &[Node]) -> bool {
+    for parent in anc.iter().rev() {
         match parent.kind() {
             "struct_expression" => return true,
-            "scoped_type_identifier" | "generic_type_with_turbofish" => {
-                current = parent;
-            }
+            "scoped_type_identifier" | "generic_type_with_turbofish" => {}
             _ => return false,
         }
-    }
-    false
-}
-
-fn is_inside_use(node: Node) -> bool {
-    let mut current = node.parent();
-    while let Some(n) = current {
-        if n.kind() == "use_declaration" {
-            return true;
-        }
-        current = n.parent();
     }
     false
 }
@@ -1133,6 +1555,24 @@ fn collect_test_ranges(node: Node, src: &[u8], out: &mut Vec<(u32, u32)>) {
     }
 }
 
+/// Split `#[path(args)]` into its path and argument text.
+fn attribute_path_and_args(text: &str) -> (&str, Option<&str>) {
+    let inner = text
+        .trim()
+        .trim_start_matches('#')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    let (path, args) = split_call(inner);
+    (path.trim(), args)
+}
+
+/// `#[test]` and namespaced test harnesses: `#[tokio::test]`,
+/// `#[sqlx::test(migrations = "..")]`.
+fn is_test_fn_attribute(path: &str) -> bool {
+    path.rsplit("::").next().map(str::trim) == Some("test")
+}
+
 /// Whether an `attribute_item` marks what follows as test-only. Recognises
 /// `#[test]` (and namespaced variants like `#[tokio::test]`) plus `cfg`
 /// predicates that hold only under `cfg(test)`.
@@ -1140,16 +1580,8 @@ fn attribute_marks_test(node: Node, src: &[u8]) -> bool {
     let Ok(text) = node.utf8_text(src) else {
         return false;
     };
-    let inner = text
-        .trim()
-        .trim_start_matches('#')
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim();
-
-    // `#[test]`, `#[tokio::test]`, `#[tokio::test(flavor = "multi_thread")]`.
-    let (path, args) = split_call(inner);
-    if path.rsplit("::").next().map(str::trim) == Some("test") {
+    let (path, args) = attribute_path_and_args(text);
+    if is_test_fn_attribute(path) {
         return true;
     }
 
@@ -1941,5 +2373,199 @@ fn setup() {
             Some("config"),
             "call before let should resolve to the function, not be shadowed"
         );
+    }
+
+    // --- sutra/477: dead-code ref extraction ---
+
+    fn refs_named<'a>(r: &'a ParseResult, name: &str) -> Vec<&'a ExtractedRef> {
+        r.references.iter().filter(|x| x.name == name).collect()
+    }
+
+    #[test]
+    fn scoped_call_carries_its_path_as_qualifier() {
+        let r = parse_rust(
+            "fn f() { tools::calls::handle(1); Config::new(); Vec::<u8>::new(); }",
+            "src/mcp.rs",
+        )
+        .expect("parse");
+        let handle = refs_named(&r, "handle");
+        assert_eq!(handle.len(), 1);
+        assert_eq!(handle[0].context_kind, RefContextKind::Call);
+        assert_eq!(handle[0].qualifier.as_deref(), Some("tools::calls"));
+        let news: Vec<_> = refs_named(&r, "new")
+            .iter()
+            .map(|x| x.qualifier.as_deref())
+            .collect();
+        assert_eq!(news, vec![Some("Config"), Some("Vec")]);
+        // The type segment of `Config::new()` is a type use; modules are not.
+        assert_eq!(
+            refs_named(&r, "Config")[0].context_kind,
+            RefContextKind::TypeUse
+        );
+        assert!(refs_named(&r, "calls").is_empty());
+    }
+
+    #[test]
+    fn qualified_ref_skips_the_local_scope_hint() {
+        let r = parse_rust(
+            "fn handle() {}\nfn f() { other::handle(); Self::handle(); }",
+            "src/a.rs",
+        )
+        .expect("parse");
+        let handle = refs_named(&r, "handle");
+        assert_eq!(
+            handle[0].resolved_local_target, None,
+            "other::handle is not local"
+        );
+        assert_eq!(handle[1].resolved_local_target.as_deref(), Some("handle"));
+    }
+
+    #[test]
+    fn value_reads_keep_items_and_drop_locals() {
+        let src = "use crate::limits::MAX_ROWS;\n\
+                   const LIMIT: usize = 3;\n\
+                   fn helper(x: u8) -> u8 { x }\n\
+                   fn f(depth: usize) {\n\
+                       let n = depth.min(LIMIT);\n\
+                       let g = [1].map(helper);\n\
+                       let _ = (n, g, MAX_ROWS);\n\
+                   }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let reads: Vec<&str> = r
+            .references
+            .iter()
+            .filter(|x| x.context_kind == RefContextKind::Read)
+            .map(|x| x.name.as_str())
+            .collect();
+        for kept in ["LIMIT", "helper", "MAX_ROWS"] {
+            assert!(
+                reads.contains(&kept),
+                "{kept} should be a Read ref, got {reads:?}"
+            );
+        }
+        for dropped in ["depth", "n", "g", "x"] {
+            assert!(
+                !reads.contains(&dropped),
+                "{dropped} is a local, got {reads:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_patterns_are_not_refs() {
+        let r = parse_rust(
+            "fn f(e: E) { match e { E::A => 1, E::B(x) => x }; }",
+            "src/a.rs",
+        )
+        .expect("parse");
+        assert!(refs_named(&r, "A").is_empty());
+        assert!(refs_named(&r, "B").is_empty());
+    }
+
+    #[test]
+    fn macro_token_trees_yield_calls_paths_and_format_args() {
+        let src = "const LIMIT: u8 = 1;\n\
+                   fn build(x: u8) -> u8 { x }\n\
+                   fn f(s: S) {\n\
+                       let _ = json!({\"a\": build(LIMIT), \"b\": codes::INVALID});\n\
+                       let _ = format!(\"{LIMIT} {s:?} {} {{skip}}\", s.render(1));\n\
+                   }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        assert_eq!(
+            refs_named(&r, "build")[0].context_kind,
+            RefContextKind::Call
+        );
+        let limits = refs_named(&r, "LIMIT");
+        assert_eq!(
+            limits.len(),
+            2,
+            "json! arg and {{LIMIT}} placeholder: {limits:?}"
+        );
+        assert!(
+            limits
+                .iter()
+                .all(|x| x.context_kind == RefContextKind::Read)
+        );
+        assert_eq!(limits[1].line, 5);
+        let invalid = refs_named(&r, "INVALID");
+        assert_eq!(invalid[0].qualifier.as_deref(), Some("codes"));
+        let render = refs_named(&r, "render");
+        assert_eq!(render[0].receiver.as_deref(), Some("s"));
+        assert!(
+            refs_named(&r, "skip").is_empty(),
+            "{{{{skip}}}} is an escaped brace"
+        );
+        assert!(refs_named(&r, "s").is_empty(), "{{s:?}} names a parameter");
+    }
+
+    #[test]
+    fn serde_attribute_names_a_function() {
+        let src = "#[derive(Deserialize)]\n\
+                   struct C {\n\
+                       #[serde(default = \"one\", skip_serializing_if = \"Option::is_none\")]\n\
+                       n: u32,\n\
+                   }\n\
+                   fn one() -> u32 { 1 }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        assert_eq!(refs_named(&r, "one")[0].context_kind, RefContextKind::Call);
+        assert_eq!(
+            refs_named(&r, "is_none")[0].qualifier.as_deref(),
+            Some("Option")
+        );
+    }
+
+    #[test]
+    fn method_call_is_not_shadowed_by_a_same_named_local() {
+        let src = "struct S;\n\
+                   impl S { fn classifier(&self) -> u8 { 1 } }\n\
+                   fn f(state: S) {\n\
+                       let classifier = 1;\n\
+                       let c = state.classifier();\n\
+                       let d = state.make().classifier();\n\
+                   }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let calls: Vec<_> = refs_named(&r, "classifier")
+            .into_iter()
+            .filter(|x| x.context_kind == RefContextKind::Call)
+            .collect();
+        assert_eq!(calls.len(), 2);
+        for c in &calls {
+            assert_ne!(
+                c.resolved_local_target.as_deref(),
+                Some(LOCAL_BINDING_SENTINEL),
+                "a local cannot shadow a method: {c:?}"
+            );
+        }
+        assert_eq!(
+            calls[1].receiver.as_deref(),
+            Some(""),
+            "expression receiver"
+        );
+    }
+
+    #[test]
+    fn trait_impl_items_are_flagged_override() {
+        let src = "trait T { fn a(&self); }\n\
+                   struct S;\n\
+                   impl T for S { fn a(&self) {} }\n\
+                   impl S { fn b(&self) {} }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let flat = crate::parser::flatten_symbols(&r.symbols);
+        let flags = |qn: &str| {
+            flat.iter()
+                .find(|s| s.qualified_name == qn)
+                .map(|s| s.flags & FLAG_OVERRIDE)
+                .expect("symbol")
+        };
+        assert_ne!(flags("S::a"), 0);
+        assert_eq!(flags("S::b"), 0);
+        assert_eq!(flags("T::a"), 0);
+    }
+
+    #[test]
+    fn namespaced_test_attributes_flag_test() {
+        let src = "#[sqlx::test(migrations = \"../m\")]\nasync fn t(pool: Pool) {}";
+        let r = parse_rust(src, "server/tests/a.rs").expect("parse");
+        assert_ne!(r.symbols[0].flags & FLAG_TEST, 0);
     }
 }

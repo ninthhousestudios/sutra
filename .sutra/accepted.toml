@@ -553,6 +553,13 @@ by = "clone-audit-sutra/251"
 
 [[waiver]]
 constraint = "no-clone-driven-dev"
+file = "src/resolver.rs"
+symbol = "unresolved"
+rationale = "owned struct field construction from borrowed data; twin of resolved(), clones moved out of the waived resolve_single"
+by = "sutra/477"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
 file = "src/rest.rs"
 symbol = "add_workspace"
 rationale = "owned struct field construction from borrowed data"

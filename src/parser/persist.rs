@@ -118,6 +118,7 @@ pub(crate) fn build_ref_params<'a>(
             context_kind: rf.context_kind.as_str(),
             resolved_local_target: rf.resolved_local_target.as_deref(),
             receiver: rf.receiver.as_deref(),
+            qualifier: rf.qualifier.as_deref(),
         })
         .collect()
 }

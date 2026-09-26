@@ -454,6 +454,7 @@ mod tests {
             context_kind: "call".into(),
             resolved_local_target: None,
             receiver: None,
+            qualifier: None,
         }
     }
 
@@ -743,6 +744,7 @@ mod tests {
             context_kind: context_kind.into(),
             resolved_local_target: None,
             receiver: None,
+            qualifier: None,
         }
     }
 
@@ -911,6 +913,7 @@ mod tests {
             context_kind: "call".into(),
             resolved_local_target: None,
             receiver: None,
+            qualifier: None,
         }
     }
 
@@ -1011,6 +1014,7 @@ mod tests {
             context_kind: "call".into(),
             resolved_local_target: None,
             receiver: Some(receiver.into()),
+            qualifier: None,
         }
     }
 

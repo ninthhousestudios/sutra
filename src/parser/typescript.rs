@@ -1012,6 +1012,7 @@ fn walk_type_refs(cursor: &mut TreeCursor, src: &[u8], refs: &mut Vec<ExtractedR
             context_kind: RefContextKind::TypeUse,
             resolved_local_target: None,
             receiver,
+            qualifier: None,
         });
     }
 

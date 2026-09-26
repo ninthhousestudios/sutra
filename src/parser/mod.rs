@@ -179,7 +179,13 @@ pub struct ExtractedRef {
     pub resolved_local_target: Option<String>,
     /// Receiver identifier for method-call / field-access refs (e.g. `x` in `x.method()`).
     /// Captured at parse time; used by type-tracking resolution (Phase B).
+    /// Rust records every method call's receiver, as "" when it is an
+    /// expression rather than an identifier (`a.b().method()`).
     pub receiver: Option<String>,
+    /// Path before the final segment of a Rust path expression (`tools::calls`
+    /// in `tools::calls::handle()`, `Config` in `Config::new()`). The resolver
+    /// binds the name only among symbols that path can reach, never globally.
+    pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

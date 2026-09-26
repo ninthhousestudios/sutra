@@ -1,0 +1,1 @@
+ALTER TABLE refs ADD COLUMN qualifier TEXT;

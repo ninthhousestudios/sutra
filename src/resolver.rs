@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::SymbolEntry;
 use crate::parser::dart::TYPE_TRACKING_PREFIX;
-use crate::parser::rust::LOCAL_BINDING_SENTINEL;
+use crate::parser::rust::{LOCAL_BINDING_SENTINEL, strip_generic_args};
 use crate::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +12,7 @@ pub enum ResolutionMethod {
     Import,
     GlobalFallback,
     TypeTracking,
+    QualifiedPath,
 }
 
 impl ResolutionMethod {
@@ -22,6 +23,7 @@ impl ResolutionMethod {
             Self::Import => "import",
             Self::GlobalFallback => "global_fallback",
             Self::TypeTracking => "type_tracking",
+            Self::QualifiedPath => "qualified_path",
         }
     }
 }
@@ -59,6 +61,8 @@ pub struct SymbolIndex<'a> {
     by_short_name: HashMap<&'a str, Vec<&'a SymbolEntry>>,
     by_qualified_name: HashMap<&'a str, Vec<&'a SymbolEntry>>,
     class_members: ClassMembers<'a>,
+    /// Path of each `.rs` file, for resolving `module::item` paths.
+    rust_path_by_file: HashMap<i64, String>,
 }
 
 impl<'a> SymbolIndex<'a> {
@@ -79,7 +83,19 @@ impl<'a> SymbolIndex<'a> {
             by_short_name,
             by_qualified_name,
             class_members: build_class_members(all_symbols),
+            rust_path_by_file: HashMap::new(),
         }
+    }
+
+    /// Supply file paths so `module::item` paths can resolve. Without them a
+    /// module-qualified Rust ref resolves only when the module is inline.
+    pub fn with_file_paths<'p>(mut self, paths: impl IntoIterator<Item = (i64, &'p str)>) -> Self {
+        self.rust_path_by_file = paths
+            .into_iter()
+            .filter(|(_, path)| path.ends_with(".rs"))
+            .map(|(id, path)| (id, path.to_string()))
+            .collect();
+        self
     }
 
     fn short(&self, name: &str) -> &[&'a SymbolEntry] {
@@ -89,6 +105,35 @@ impl<'a> SymbolIndex<'a> {
     fn qualified(&self, name: &str) -> &[&'a SymbolEntry] {
         self.by_qualified_name.get(name).map_or(&[], Vec::as_slice)
     }
+}
+
+/// The module a Rust file defines: its stem, or its directory for `mod.rs`.
+/// A crate root (`lib.rs`, `main.rs`) is named for its package directory
+/// (`chat-store/src/lib.rs` is `chat-store`), which [`same_module`] matches
+/// against the crate name `chat_store`. A Cargo `package =` rename is not seen.
+fn rust_module_name(path: &str) -> Option<&str> {
+    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
+    let stem = file.strip_suffix(".rs")?;
+    let mut dirs = dir.rsplit('/').filter(|d| !d.is_empty());
+    match stem {
+        "mod" => dirs.next(),
+        "lib" | "main" => match dirs.next() {
+            Some("src") => dirs.next(),
+            other => other,
+        },
+        _ => Some(stem),
+    }
+}
+
+/// Whether a module or directory name matches a path segment; a package
+/// directory `chat-store` is the crate `chat_store`.
+fn same_module(name: &str, segment: &str) -> bool {
+    name == segment
+        || (name.len() == segment.len()
+            && name
+                .bytes()
+                .zip(segment.bytes())
+                .all(|(a, b)| a == b || (a == b'-' && b == b'_')))
 }
 
 pub fn resolve_refs(
@@ -124,6 +169,9 @@ enum KindFilter<'a> {
     /// Rust `recv.name()`: method-call syntax can only dispatch to a method,
     /// never to a same-named free function (sutra/433).
     MethodOnly,
+    /// Rust value read: a const or static, a fn or method passed as a value,
+    /// or a unit struct. Never a field, module or type-only item.
+    RustRead,
 }
 
 impl KindFilter<'_> {
@@ -132,6 +180,10 @@ impl KindFilter<'_> {
             Self::Any => true,
             Self::Context(context) => kind_compatible(context, symbol_kind),
             Self::MethodOnly => symbol_kind == "method",
+            Self::RustRead => matches!(
+                symbol_kind,
+                "const" | "static" | "function" | "method" | "struct"
+            ),
         }
     }
 }
@@ -169,11 +221,26 @@ fn resolve_single(
     let receiver_call = matches!(r.context_kind, RefContextKind::Call) && r.receiver.is_some();
     let filter = if receiver_call && lang == "rust" {
         KindFilter::MethodOnly
+    } else if lang == "rust" && matches!(r.context_kind, RefContextKind::Read) {
+        KindFilter::RustRead
     } else if use_kind_filter {
         KindFilter::Context(&r.context_kind)
     } else {
         KindFilter::Any
     };
+
+    // A Rust path names where the item lives, so it binds only there. Paths
+    // rooted at the current module or impl resolve like a bare name.
+    if lang == "rust"
+        && let Some(qualifier) = r.qualifier.as_deref()
+        && let Some(last) = qualifier.rsplit("::").next()
+        && !matches!(last, "self" | "crate" | "super" | "Self")
+    {
+        return match find_qualified(name, last, filter, index, file_imports, file_id) {
+            Some(id) => resolved(r, id, ResolutionMethod::QualifiedPath),
+            None => unresolved(r),
+        };
+    }
 
     // --- Step 0: scope-chain / type-tracking hints from parse-time resolution ---
     if let Some(hint) = &r.resolved_local_target {
@@ -204,7 +271,13 @@ fn resolve_single(
             // Type found but member not in DB — fall through to standard resolution.
         }
 
-        if let Some(s) = index.qualified(hint).iter().find(|s| s.file_id == file_id) {
+        // The scope chain matches by name alone, and an `impl Foo` block is in
+        // scope under `Foo`: a type use must still bind to the type.
+        if let Some(s) = index
+            .qualified(hint)
+            .iter()
+            .find(|s| s.file_id == file_id && filter.accepts(&s.kind))
+        {
             return resolved(r, s.id, ResolutionMethod::ScopeChain);
         }
     }
@@ -314,13 +387,93 @@ fn resolve_single(
         }
     }
 
+    unresolved(r)
+}
+
+fn unresolved(r: &ExtractedRef) -> ResolvedRef {
     ResolvedRef {
         original: r.clone(),
         target_symbol_id: None,
-        unresolved_name: Some(name.clone()),
+        unresolved_name: Some(r.name.clone()),
         skipped: false,
         resolution_method: None,
     }
+}
+
+/// Resolve `…::segment::name`. `segment` is a type or trait (`Config::new`,
+/// matched against `Config::new` or `outer::Config::new`, generics ignored) or
+/// a module (`calls::handle`, matched against top-level items of a file whose
+/// module is `calls`). An import alias is followed first. Failing a direct
+/// match, a top-level item of a child module of `segment` is taken: that is
+/// how a `pub use child::name` or `pub use child::*` re-export resolves, and a
+/// path to a child item that is not re-exported would not compile. No match
+/// at all means the path leaves the workspace (`std::fs::read`), so there is
+/// no global fallback.
+fn find_qualified(
+    name: &str,
+    segment: &str,
+    filter: KindFilter<'_>,
+    index: &SymbolIndex<'_>,
+    file_imports: &[ExtractedImport],
+    file_id: i64,
+) -> Option<i64> {
+    let segment = file_imports
+        .iter()
+        .find(|i| i.alias.as_deref() == Some(segment))
+        .and_then(|i| i.raw_path.rsplit("::").next())
+        .unwrap_or(segment);
+    let member = format!("{segment}::{name}");
+    let nested_member = format!("::{member}");
+    let candidates: Vec<&SymbolEntry> = index
+        .short(name)
+        .iter()
+        .filter(|s| filter.accepts(&s.kind))
+        .copied()
+        .collect();
+    let module_path = |s: &SymbolEntry| {
+        (s.qualified_name == name)
+            .then(|| index.rust_path_by_file.get(&s.file_id))
+            .flatten()
+    };
+    let direct: Vec<&SymbolEntry> = candidates
+        .iter()
+        .filter(|s| {
+            let qn = if s.qualified_name.contains('<') {
+                std::borrow::Cow::Owned(strip_generic_args(&s.qualified_name))
+            } else {
+                std::borrow::Cow::Borrowed(s.qualified_name.as_str())
+            };
+            qn == member
+                || qn.ends_with(&nested_member)
+                || module_path(s)
+                    .and_then(|p| rust_module_name(p))
+                    .is_some_and(|m| same_module(m, segment))
+        })
+        .copied()
+        .collect();
+    let pick = |matches: &[&SymbolEntry]| {
+        matches
+            .iter()
+            .find(|s| s.file_id == file_id)
+            .or_else(|| matches.first())
+            .map(|s| s.id)
+    };
+    if !direct.is_empty() {
+        return pick(&direct);
+    }
+    let reexported: Vec<&SymbolEntry> = candidates
+        .iter()
+        .filter(|s| module_path(s).is_some_and(|p| is_in_module_dir(p, segment)))
+        .copied()
+        .collect();
+    pick(&reexported)
+}
+
+/// Whether a file sits below a directory named `module`, making it a
+/// descendant of that module (`src/db/graph.rs` is below `db`).
+fn is_in_module_dir(path: &str, module: &str) -> bool {
+    path.rsplit_once('/')
+        .is_some_and(|(dir, _)| dir.split('/').any(|d| same_module(d, module)))
 }
 
 fn resolved(r: &ExtractedRef, id: i64, method: ResolutionMethod) -> ResolvedRef {

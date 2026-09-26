@@ -617,6 +617,126 @@ _UsedClass make() {
     }
 }
 
+/// sutra/477: each form the vidhi/review/5 pilot misreported as dead is live,
+/// and genuinely unused private items are still reported.
+#[test]
+fn test_rust_dead_code_resolution_forms() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("tools")).unwrap();
+    std::fs::create_dir_all(src.join("health")).unwrap();
+    std::fs::create_dir_all(dir.path().join("server/tests")).unwrap();
+    std::fs::write(
+        src.join("main.rs"),
+        r#"
+mod health;
+mod tools;
+
+const WITHDRAWAL_ACK: &str = "ack";
+const UNUSED_LIMIT: u8 = 9;
+static GREETING: &str = "hi";
+
+trait Adapter {
+    fn parse(&self) -> u8;
+    fn never_dispatched(&self) -> u8 { 0 }
+}
+struct Rust;
+impl Adapter for Rust {
+    fn parse(&self) -> u8 { 1 }
+    fn never_dispatched(&self) -> u8 { 2 }
+}
+
+fn run(a: &dyn Adapter) -> u8 { a.parse() }
+fn as_value(x: u8) -> u8 { x }
+fn unused_helper() {}
+
+fn main() {
+    let _ = tools::calls::handle();
+    let _ = health::finding_count();
+    let _ = run(&Rust);
+    let _ = [1u8].map(as_value);
+    println!("{WITHDRAWAL_ACK} {}", GREETING);
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(src.join("tools/mod.rs"), "pub mod calls;\npub mod dead;\n").unwrap();
+    std::fs::write(
+        src.join("tools/calls.rs"),
+        "pub(crate) fn handle() -> u8 { 1 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("tools/dead.rs"),
+        "pub(crate) fn handle() -> u8 { 2 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("health/mod.rs"),
+        "mod findings;\npub use findings::*;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("health/findings.rs"),
+        "pub(crate) fn finding_count() -> u8 { 0 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("server/tests/api.rs"),
+        "#[sqlx::test]\nasync fn creates_a_chart() {}\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceEntry {
+        id: "rust-dead".to_string(),
+        root: dir.path().to_path_buf(),
+        languages: vec!["rust".to_string()],
+        frozen: false,
+    };
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    let dead: std::collections::HashSet<(String, String)> = db
+        .find_dead_symbols(false, None)
+        .unwrap()
+        .into_iter()
+        .map(|(qn, path, _kind, _line, _vis)| (path, qn))
+        .collect();
+    let is_dead = |path: &str, qn: &str| dead.contains(&(path.to_string(), qn.to_string()));
+
+    for (path, qn) in [
+        ("src/main.rs", "UNUSED_LIMIT"),
+        ("src/main.rs", "unused_helper"),
+        ("src/tools/dead.rs", "handle"),
+    ] {
+        assert!(
+            is_dead(path, qn),
+            "{path}::{qn} is unused; dead set = {dead:?}"
+        );
+    }
+    for (path, qn) in [
+        ("src/main.rs", "WITHDRAWAL_ACK"), // format-string inline arg
+        ("src/main.rs", "GREETING"),       // macro argument
+        ("src/main.rs", "as_value"),       // fn passed as a value
+        ("src/main.rs", "Rust::parse"),    // trait impl method
+        ("src/main.rs", "Adapter::parse"), // trait method, dispatched
+        ("src/tools/calls.rs", "handle"),  // module-qualified call
+        ("src/health/findings.rs", "finding_count"), // glob re-export
+        ("server/tests/api.rs", "creates_a_chart"), // #[sqlx::test] in a member's tests/
+    ] {
+        assert!(
+            !is_dead(path, qn),
+            "{path}::{qn} is used; dead set = {dead:?}"
+        );
+    }
+}
+
 // sutra/364: a parser-identity change must bust the per-file content_hash skip.
 // The pipeline memoizes on source bytes alone, so before this fix a changed
 // extractor (grammar bump, adapter fix, symbol-kind change) left every unchanged
