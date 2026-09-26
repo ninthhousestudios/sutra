@@ -236,6 +236,44 @@ fn full_parse_with_history_ingests_and_feeds_cochange() {
     assert!(history_loaded(&fx));
 }
 
+/// A vendor-sync shaped history: every commit touches the two indexed files
+/// plus 40 unindexed ones. Only the indexed pair reaches commit_files, but the
+/// commit's recorded size must include the rest so the fan-out cap drops it
+/// (sutra/476).
+#[test]
+fn sync_commit_of_mostly_unindexed_paths_yields_no_cochange() {
+    let mut files: Vec<(String, String)> = GIT_FILES
+        .iter()
+        .map(|(p, c)| (p.to_string(), c.to_string()))
+        .collect();
+    for i in 0..40 {
+        files.push((format!("assets/blob{i}.txt"), format!("blob {i}\n")));
+    }
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let fx = git_fixture("git-sync-drop", &refs);
+    full_parse(&fx);
+
+    assert_eq!(
+        commit_file_rows(&fx.db),
+        4,
+        "two commits x two indexed files"
+    );
+    let max_count: i64 = fx
+        .db
+        .conn_for_test()
+        .query_row("SELECT MAX(file_count) FROM commits", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(max_count, 42, "file_count counts unindexed paths too");
+    assert_eq!(
+        cochange_pair_count(&fx.db),
+        0,
+        "a 42-path commit is a sync drop, not a co-edit"
+    );
+}
+
 #[test]
 fn shallow_clone_ingests_nothing() {
     let (fx, _origin) = shallow_git_fixture("git-shallow");

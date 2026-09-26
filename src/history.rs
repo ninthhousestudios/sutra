@@ -127,18 +127,31 @@ fn ingest_present(db: &Db, workspace_root: &Path, cutoff: i64) -> Result<History
 }
 
 /// Persist ingested commit-file rows: one `commits` row per distinct hash and one
-/// `commit_files` edge per (hash, indexed file). Paths not indexed are dropped.
+/// `commit_files` edge per (hash, indexed file). Paths not indexed are dropped
+/// from `commit_files` but still counted in the commit's `file_count`, so the
+/// cochange bulk-commit cap sees a vendor sync at its real size.
 fn write_commit_files(db: &Db, commit_files: &[git::CommitFile]) -> Result<usize> {
     let files = db.all_files()?;
     let path_to_id: HashMap<&str, i64> = files.iter().map(|f| (&*f.path, f.id)).collect();
+    let mut paths_per_commit: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for cf in commit_files {
+        paths_per_commit
+            .entry(cf.hash.as_str())
+            .or_default()
+            .insert(cf.path.as_str());
+    }
     let mut seen: HashSet<&str> = HashSet::new();
     let mut commit_rows = Vec::new();
     for cf in commit_files {
         if seen.insert(cf.hash.as_str()) {
+            let file_count = paths_per_commit
+                .get(cf.hash.as_str())
+                .map(|p| p.len() as i64);
             commit_rows.push(CommitRow {
                 hash: cf.hash.to_string(),
                 committed_at: cf.timestamp,
                 author: cf.author.to_string(),
+                file_count,
             });
         }
     }

@@ -368,44 +368,38 @@ fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel 
         .unwrap_or(FreshnessLevel::StaleIndex)
 }
 
+/// Co-change partners of the changed files that share no static edge with them.
+/// A failure is an `Err`, never an empty list: "no partners" must mean the
+/// history was read and none qualified (sutra/476).
 fn behavioral_coupling(
     db: &Db,
     workspace_root: &Path,
     changed_paths: &[String],
-) -> Vec<serde_json::Value> {
-    let config = match components::load_config(workspace_root) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let threshold = config.cochange_threshold.unwrap_or(0.5);
+) -> Result<Vec<serde_json::Value>> {
+    let config = components::load_config(workspace_root)?;
+    let threshold = config
+        .cochange_threshold
+        .unwrap_or(components::DEFAULT_COCHANGE_THRESHOLD);
 
     let mut changed_ids: HashMap<i64, &str> = HashMap::new();
     for p in changed_paths {
-        if let Ok(Some(f)) = db.file_by_path(p) {
+        if let Some(f) = db.file_by_path(p)? {
             changed_ids.insert(f.id, p.as_str());
         }
     }
     if changed_ids.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    let cochange_pairs = match db.cochange_pairs_above_threshold(threshold) {
-        Ok(pairs) => pairs,
-        Err(_) => return Vec::new(),
-    };
+    let cochange_pairs = db.cochange_pairs_above_threshold(threshold)?;
 
     let all_files: HashMap<i64, Arc<str>> = db
-        .all_files()
-        .unwrap_or_default()
+        .all_files()?
         .into_iter()
         .map(|f| (f.id, f.path))
         .collect();
 
-    let static_edges: HashSet<(i64, i64)> = db
-        .static_file_edges()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
+    let static_edges: HashSet<(i64, i64)> = db.static_file_edges()?.into_iter().collect();
 
     let mut entries: Vec<(f64, serde_json::Value)> = cochange_pairs
         .into_iter()
@@ -439,7 +433,7 @@ fn behavioral_coupling(
         .collect();
 
     entries.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    entries.into_iter().map(|(_, v)| v).collect()
+    Ok(entries.into_iter().map(|(_, v)| v).collect())
 }
 
 fn build_recommended_reads(
@@ -682,7 +676,11 @@ pub fn compute(
         },
     ]);
 
-    let behavioral = behavioral_coupling(db, workspace_root, changed_paths);
+    let (behavioral, behavioral_error) =
+        match behavioral_coupling(db, workspace_root, changed_paths) {
+            Ok(entries) => (entries, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
     let recommended_reads =
         build_recommended_reads(db, workspace_root, &signals.affected_files, &behavioral);
 
@@ -712,6 +710,9 @@ pub fn compute(
     });
     if !behavioral.is_empty() {
         result["behavioral_coupling"] = json!(behavioral);
+    }
+    if let Some(err) = behavioral_error {
+        result["behavioral_coupling_error"] = json!(err);
     }
     if !findings.acknowledged.is_empty() {
         result["acknowledged"] = json!(findings.acknowledged);

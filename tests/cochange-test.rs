@@ -58,16 +58,19 @@ fn cochange_for_file_returns_partners() {
             hash: "c1".into(),
             committed_at: 1000,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c2".into(),
             committed_at: 1001,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c3".into(),
             committed_at: 1002,
             author: "a@b.c".into(),
+            file_count: None,
         },
     ];
     // f1 and f2 share c1, c2; f1 and f3 share c1 only; f1 also in c3 alone
@@ -116,6 +119,7 @@ fn cochange_for_file_excludes_self() {
         hash: "c1".into(),
         committed_at: 1000,
         author: "a@b.c".into(),
+        file_count: None,
     }];
     let pairs = vec![("c1".into(), f1), ("c1".into(), f2)];
     db.replace_commit_files(&commits, &pairs).unwrap();
@@ -143,6 +147,7 @@ fn cochange_for_file_respects_threshold() {
             hash: hash.clone(),
             committed_at: i,
             author: "x".into(),
+            file_count: None,
         });
         pairs.push((hash, f1));
     }
@@ -152,6 +157,7 @@ fn cochange_for_file_respects_threshold() {
             hash: hash.clone(),
             committed_at: i,
             author: "x".into(),
+            file_count: None,
         });
         pairs.push((hash, f2));
     }
@@ -159,6 +165,7 @@ fn cochange_for_file_respects_threshold() {
         hash: "shared".into(),
         committed_at: 100,
         author: "x".into(),
+        file_count: None,
     });
     pairs.push(("shared".into(), f1));
     pairs.push(("shared".into(), f2));
@@ -190,16 +197,19 @@ fn cochange_for_file_sorted_by_jaccard_desc() {
             hash: "c1".into(),
             committed_at: 1000,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c2".into(),
             committed_at: 1001,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c3".into(),
             committed_at: 1002,
             author: "a@b.c".into(),
+            file_count: None,
         },
     ];
     let pairs = vec![
@@ -240,26 +250,31 @@ fn jaccard_computation() {
             hash: "c1".into(),
             committed_at: 1000,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c2".into(),
             committed_at: 1001,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c3".into(),
             committed_at: 1002,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c4".into(),
             committed_at: 1003,
             author: "a@b.c".into(),
+            file_count: None,
         },
         CommitRow {
             hash: "c5".into(),
             committed_at: 1004,
             author: "a@b.c".into(),
+            file_count: None,
         },
     ];
     let pairs = vec![
@@ -308,6 +323,7 @@ fn jaccard_below_threshold_excluded() {
             hash: hash.clone(),
             committed_at: i,
             author: "x".into(),
+            file_count: None,
         });
         pairs.push((hash, f1));
     }
@@ -317,6 +333,7 @@ fn jaccard_below_threshold_excluded() {
             hash: hash.clone(),
             committed_at: i,
             author: "x".into(),
+            file_count: None,
         });
         pairs.push((hash, f2));
     }
@@ -325,6 +342,7 @@ fn jaccard_below_threshold_excluded() {
         hash: "shared".into(),
         committed_at: 100,
         author: "x".into(),
+        file_count: None,
     });
     pairs.push(("shared".into(), f1));
     pairs.push(("shared".into(), f2));
@@ -349,6 +367,7 @@ fn commit_file_count_tracks_rows() {
         hash: "c1".into(),
         committed_at: 1000,
         author: "a@b.c".into(),
+        file_count: None,
     }];
     let pairs = vec![("c1".into(), f1)];
     db.replace_commit_files(&commits, &pairs).unwrap();
@@ -627,4 +646,63 @@ fn known_entity_commit_hashes_returns_indexed() {
     assert!(known.contains("abc123"));
     assert!(known.contains("def456"));
     assert_eq!(known.len(), 2);
+}
+
+/// Two indexed files co-edited in `n` commits, each commit reporting
+/// `file_count` total paths touched.
+fn seed_pair_history(db: &Db, n: usize, file_count: Option<i64>) -> (i64, i64) {
+    let f1 = db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    let f2 = db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+    let mut commits = Vec::new();
+    let mut pairs = Vec::new();
+    for i in 0..n {
+        let hash = format!("c{i}");
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: i as i64,
+            author: "x".into(),
+            file_count,
+        });
+        pairs.push((hash.clone(), f1));
+        pairs.push((hash, f2));
+    }
+    db.replace_commit_files(&commits, &pairs).unwrap();
+    (f1, f2)
+}
+
+/// A vendor sync touches mostly unindexed paths, so only two rows land in
+/// commit_files. The cap must see the commit's real size (sutra/476).
+#[test]
+fn bulk_commit_excluded_by_total_file_count() {
+    let (_dir, db) = setup_db();
+    seed_pair_history(&db, 3, Some(99));
+
+    assert!(
+        db.cochange_pairs_above_threshold(0.5).unwrap().is_empty(),
+        "commits touching 99 paths are sync drops, not co-edits"
+    );
+}
+
+#[test]
+fn ordinary_commit_under_cap_still_pairs() {
+    let (_dir, db) = setup_db();
+    let (f1, f2) = seed_pair_history(&db, 3, Some(5));
+
+    let pairs = db.cochange_pairs_above_threshold(0.5).unwrap();
+    assert!(
+        pairs.iter().any(|&(a, b, _, shared)| a.min(b) == f1.min(f2)
+            && a.max(b) == f1.max(f2)
+            && shared == 3),
+        "a 5-file commit is a genuine co-edit, got {pairs:?}"
+    );
+}
+
+/// Rows ingested before commits.file_count existed carry NULL; the cap falls
+/// back to the indexed count rather than dropping or admitting everything.
+#[test]
+fn unknown_file_count_falls_back_to_indexed_count() {
+    let (_dir, db) = setup_db();
+    seed_pair_history(&db, 3, None);
+
+    assert_eq!(db.cochange_pairs_above_threshold(0.5).unwrap().len(), 1);
 }

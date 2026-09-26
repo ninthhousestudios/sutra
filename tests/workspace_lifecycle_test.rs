@@ -510,11 +510,13 @@ async fn test_incremental_refresh_preserves_commit_history() {
                 hash: "aaa111".to_string(),
                 committed_at: 1_700_000_000,
                 author: "t".to_string(),
+                file_count: None,
             },
             sutra::db::CommitRow {
                 hash: "bbb222".to_string(),
                 committed_at: 1_700_000_100,
                 author: "t".to_string(),
+                file_count: None,
             },
         ],
         &[

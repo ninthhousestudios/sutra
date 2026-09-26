@@ -583,6 +583,31 @@ fn test_import_edges() {
     assert_eq!(edges, expected);
 }
 
+/// A parent that only declares `pub mod child;` references no child symbol, but
+/// the pair is still statically linked. Without the import edge, review's
+/// behavioral_coupling reported health/mod.rs as a "no static edge" partner of
+/// its own child module (sutra/476).
+#[test]
+fn test_static_file_edges_include_module_declarations() {
+    let (_dir, db) = setup_db();
+    let parent = seed_file(&db, "src/health/mod.rs");
+    let child = seed_file(&db, "src/health/findings.rs");
+    let other = seed_file(&db, "src/other.rs");
+
+    db.insert_import(parent, "self::findings", Some(child), 1, "mod", None)
+        .unwrap();
+
+    let edges = db.static_file_edges().unwrap();
+    assert!(
+        edges.contains(&(parent.min(child), parent.max(child))),
+        "mod declaration must count as a static edge, got {edges:?}"
+    );
+    assert!(
+        !edges.iter().any(|&(a, b)| a == other || b == other),
+        "unrelated file must stay unlinked, got {edges:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot operations
 // ---------------------------------------------------------------------------
@@ -1397,6 +1422,7 @@ fn test_replace_file_data_preserves_history_invalidates_derived() {
             hash: "c0ffee".to_string(),
             committed_at: 1_700_000_000,
             author: "tester".to_string(),
+            file_count: None,
         }],
         &[("c0ffee".to_string(), file_id)],
     )

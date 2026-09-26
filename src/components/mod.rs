@@ -17,7 +17,7 @@ pub use anchors::{
 pub(crate) use clustering::is_test_file;
 
 const DEFAULT_STALENESS_THRESHOLD: f64 = 0.10;
-const DEFAULT_COCHANGE_THRESHOLD: f64 = 0.5;
+pub(crate) const DEFAULT_COCHANGE_THRESHOLD: f64 = 0.5;
 const DEFAULT_COCHANGE_WEIGHT: f64 = 5.0;
 const DEFAULT_COCHANGE_WINDOW_DAYS: u32 = 90;
 

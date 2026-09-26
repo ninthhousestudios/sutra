@@ -181,6 +181,34 @@ fn single_file_change_populates_all_fields() {
     assert!(!rr.is_empty());
 }
 
+/// A co-change read that fails must say so, not render as "no partners"
+/// (sutra/476). A malformed components.toml is the reachable failure.
+#[test]
+fn behavioral_coupling_failure_is_reported_not_empty() {
+    let (dir, db) = setup_db_with_files();
+    fs::create_dir_all(dir.path().join(".sutra")).unwrap();
+    fs::write(dir.path().join(".sutra/components.toml"), "not = [valid").unwrap();
+    let changed = vec!["src/core.rs".to_string()];
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &no_findings(),
+        false,
+    )
+    .unwrap();
+
+    let err = result["behavioral_coupling_error"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        err.contains("components.toml"),
+        "expected the config error, got {result}"
+    );
+    assert!(result.get("behavioral_coupling").is_none());
+}
+
 #[test]
 fn risk_breakdown_sums_correctly() {
     let (dir, db) = setup_db_with_files();

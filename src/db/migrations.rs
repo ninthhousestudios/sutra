@@ -520,6 +520,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0086_drop_snapshot_erosion.sql"),
         true,
     ),
+    // Per-commit total path count for the cochange bulk-commit cap (sutra/476).
+    // ephemeral_only: reindex recreates commits through 0025, so the ALTER must
+    // replay after it.
+    (
+        "0087_commit_file_count",
+        include_str!("../../migrations/0087_commit_file_count.sql"),
+        true,
+    ),
 ];
 
 impl Db {

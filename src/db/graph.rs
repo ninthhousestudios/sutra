@@ -13,7 +13,13 @@ use super::{CommitRow, Db};
 /// jaccard 1.0 and OOM-killed the process at ~12.5 GB (sutra/324). Capping
 /// per-commit fan-out bounds both the SQLite join intermediate and the result
 /// Vec by the largest *genuine* co-edit commit.
-pub(crate) const MAX_COCHANGE_COMMIT_FANOUT: i64 = 50;
+///
+/// The cap applies to every path the commit touched (`commits.file_count`), not
+/// just the indexed ones: a 99-file vendor sync with 23 indexed files is still a
+/// sync drop (sutra/476). 30 sits at the p99 of ordinary commits in sutra
+/// (32 over 180 days) and matches the cutoff used in the co-change literature
+/// (Zimmermann et al., ROSE).
+pub(crate) const MAX_COCHANGE_COMMIT_FANOUT: i64 = 30;
 
 impl Db {
     pub fn update_rollups(&self, file_id: i64, fan_in: i64, blast_radius: i64) -> Result<()> {
@@ -200,10 +206,11 @@ impl Db {
         {
             conn.execute_batch("DELETE FROM commit_files; DELETE FROM commits")?;
             let mut commit_stmt = conn.prepare_cached(
-                "INSERT OR IGNORE INTO commits (hash, committed_at, author) VALUES (?1, ?2, ?3)",
+                "INSERT OR IGNORE INTO commits (hash, committed_at, author, file_count) \
+                 VALUES (?1, ?2, ?3, ?4)",
             )?;
             for c in commits {
-                commit_stmt.execute(params![c.hash, c.committed_at, c.author])?;
+                commit_stmt.execute(params![c.hash, c.committed_at, c.author, c.file_count])?;
             }
             let mut cf_stmt = conn.prepare_cached(
                 "INSERT OR IGNORE INTO commit_files (commit_hash, file_id) VALUES (?1, ?2)",
@@ -223,8 +230,10 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "WITH eligible_commits AS (
-                SELECT commit_hash FROM commit_files
-                GROUP BY commit_hash HAVING COUNT(*) <= ?2
+                SELECT cf.commit_hash FROM commit_files cf
+                JOIN commits c ON c.hash = cf.commit_hash
+                GROUP BY cf.commit_hash
+                HAVING COALESCE(MAX(c.file_count), COUNT(*)) <= ?2
             ),
             file_commit_counts AS (
                 SELECT file_id, COUNT(*) AS cnt FROM commit_files
@@ -327,18 +336,23 @@ impl Db {
         )?)
     }
 
+    /// Undirected file pairs joined by a resolved reference or a resolved
+    /// import. Imports include module declarations (`pub mod x;`), so a parent
+    /// module and its child count as statically linked even when the parent
+    /// only re-exports and never names a child symbol (sutra/476).
     pub fn static_file_edges(&self) -> Result<Vec<(i64, i64)>> {
-        use std::collections::{HashMap, HashSet};
         let sym_file: HashMap<i64, i64> = self.all_symbol_file_map()?.into_iter().collect();
         let refs = self.all_resolved_refs()?;
-        let mut edges = HashSet::new();
-        for (src_file, target_sym, _) in refs {
-            if let Some(&target_file) = sym_file.get(&target_sym)
-                && src_file != target_file
-            {
-                edges.insert((src_file.min(target_file), src_file.max(target_file)));
-            }
-        }
+        let ref_edges = refs.into_iter().filter_map(|(src_file, target_sym, _)| {
+            sym_file
+                .get(&target_sym)
+                .map(|&target_file| (src_file, target_file))
+        });
+        let edges: HashSet<(i64, i64)> = ref_edges
+            .chain(self.import_edges()?)
+            .filter(|(a, b)| a != b)
+            .map(|(a, b)| (a.min(b), a.max(b)))
+            .collect();
         Ok(edges.into_iter().collect())
     }
 }

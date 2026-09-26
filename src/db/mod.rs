@@ -437,6 +437,9 @@ pub struct CommitRow {
     pub hash: String,
     pub committed_at: i64,
     pub author: String,
+    /// Paths the commit touched in git, indexed or not. `None` when unknown;
+    /// the cochange fan-out cap then falls back to the indexed count.
+    pub file_count: Option<i64>,
 }
 
 #[derive(Default)]
