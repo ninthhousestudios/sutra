@@ -1,6 +1,6 @@
 //! The "you fixed 1 of N" advisory end to end (sutra/467): a commit rewrites
 //! an idiom at one site, the index-backed search finds the sibling that still
-//! has it, and the firing log records it once per diff.
+//! has it, and the firing log records it once per review event (sutra/491).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -185,24 +185,51 @@ fn rust_rewrite_lists_the_surviving_sibling_with_its_symbol() {
     );
 }
 
-#[test]
-fn firings_are_logged_once_per_diff() {
-    let fx = fixture(
+/// Review `diff` and record its firings, as `sutra check` does.
+fn fire(fx: &Fixture, diff: &str) {
+    let scope = review::resolve_diff_entries(fx.root.path(), diff).unwrap();
+    let advisory = sibling_pattern::run_advisory(
+        &fx.db,
+        fx.root.path(),
+        &scope,
+        &default_registry(),
+        "check",
+        diff,
+    );
+    assert!(advisory.error.is_none(), "{:?}", advisory.error);
+    assert!(
+        advisory.firing_log_error.is_none(),
+        "{:?}",
+        advisory.firing_log_error
+    );
+}
+
+fn firings(fx: &Fixture) -> serde_json::Value {
+    sutra::tools::firings::handle(&fx.db, fx.root.path(), &default_registry(), None, None).unwrap()
+}
+
+fn commit_all(root: &Path, msg: &str) {
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "--no-verify", "-m", msg]);
+}
+
+/// Base with the swallow in `a.rs` and `sibling` as `b.rs`; HEAD fixes `a.rs`.
+fn fixed_one_of_n(sibling: &str) -> Fixture {
+    fixture(
         &[
             ("src/lib.rs", "pub mod a;\npub mod b;\n"),
             ("src/a.rs", RUST_SWALLOW),
-            ("src/b.rs", RUST_SIBLING),
+            ("src/b.rs", sibling),
         ],
         &[("src/a.rs", RUST_TYPED)],
-    );
-    let scope = review::resolve_diff_entries(fx.root.path(), "HEAD").unwrap();
-    let registry = default_registry();
-    let first =
-        sibling_pattern::run_advisory(&fx.db, fx.root.path(), &scope, &registry, "check", "HEAD");
-    assert!(first.error.is_none() && first.firing_log_error.is_none());
-    let again =
-        sibling_pattern::run_advisory(&fx.db, fx.root.path(), &scope, &registry, "check", "HEAD");
-    assert!(again.firing_log_error.is_none());
+    )
+}
+
+#[test]
+fn firings_are_logged_once_per_diff() {
+    let fx = fixed_one_of_n(RUST_SIBLING);
+    fire(&fx, "HEAD");
+    fire(&fx, "HEAD");
 
     let rows = fx
         .db
@@ -213,18 +240,167 @@ fn firings_are_logged_once_per_diff() {
     assert_eq!(row.file_path, "src/b.rs");
     assert_eq!(row.line, Some(2));
     assert_eq!(row.finding_kind, "chain");
+    assert_eq!(row.occurrence, 0);
+    assert_eq!(row.epoch, 0);
     assert_eq!(
         row.snippet.as_deref(),
         Some("serde_json::from_str(raw).unwrap_or_default()")
     );
     assert!(row.anchor_commit.is_some());
 
-    let out = sutra::tools::firings::handle(&fx.db, fx.root.path(), None, None).unwrap();
+    let out = firings(&fx);
     assert_eq!(out["firings"][0]["site_status"], "present");
-    write(fx.root.path(), "src/b.rs", RUST_TYPED);
-    let out = sutra::tools::firings::handle(&fx.db, fx.root.path(), None, None).unwrap();
+}
+
+#[test]
+fn uncommitted_edits_are_not_acted_on_until_committed() {
+    let fx = fixed_one_of_n(RUST_SIBLING);
+    fire(&fx, "HEAD");
+    let fixed = RUST_TYPED.replace("load_refs", "load_tags");
+    write(fx.root.path(), "src/b.rs", &fixed);
+    let out = firings(&fx);
+    assert_eq!(
+        out["firings"][0]["site_status"], "present",
+        "the worktree is not a commit"
+    );
+
+    commit_all(fx.root.path(), "fix b");
+    let out = firings(&fx);
     assert_eq!(out["firings"][0]["site_status"], "changed");
     assert_eq!(out["totals"]["sibling_pattern"]["changed"], 1);
+    let fix = sutra::git::head_commit_hash(fx.root.path()).unwrap();
+    assert_eq!(out["firings"][0]["changed_in"], fix.as_str());
+}
+
+#[test]
+fn duplicate_snippets_are_distinct_sites() {
+    let two = format!(
+        "{RUST_SIBLING}\npub fn load_notes(raw: &str) -> Vec<String> {{\n    serde_json::from_str(raw).unwrap_or_default()\n}}\n"
+    );
+    let fx = fixed_one_of_n(&two);
+    fire(&fx, "HEAD");
+    let rows = fx.db.firings(None, None).unwrap();
+    let sites: Vec<(Option<&str>, i64)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r.symbol.as_deref().and_then(|s| s.rsplit("::").next()),
+                r.occurrence,
+            )
+        })
+        .collect();
+    assert_eq!(sites, vec![(Some("load_tags"), 0), (Some("load_notes"), 0)]);
+
+    // Fix only load_notes: the identical line in load_tags must not mask it,
+    // and load_tags must not read as changed.
+    let fixed_notes = format!(
+        "{RUST_SIBLING}\npub fn load_notes(raw: &str) -> Result<Vec<String>, serde_json::Error> {{\n    serde_json::from_str(raw)\n}}\n"
+    );
+    write(fx.root.path(), "src/b.rs", &fixed_notes);
+    commit_all(fx.root.path(), "fix notes");
+    let out = firings(&fx);
+    let status: Vec<(&str, &str)> = out["firings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["symbol"].as_str().unwrap().rsplit("::").next().unwrap(),
+                f["site_status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        status,
+        vec![("load_tags", "present"), ("load_notes", "changed")]
+    );
+}
+
+#[test]
+fn duplicate_lines_in_one_symbol_get_their_own_occurrence() {
+    let twice = "pub fn load_tags(raw: &str) -> Vec<String> {\n    if raw.is_empty() {\n        return serde_json::from_str(raw).unwrap_or_default();\n    }\n    return serde_json::from_str(raw).unwrap_or_default();\n}\n";
+    let fx = fixed_one_of_n(twice);
+    fire(&fx, "HEAD");
+    let occ: Vec<i64> = fx
+        .db
+        .firings(None, None)
+        .unwrap()
+        .iter()
+        .map(|r| r.occurrence)
+        .collect();
+    assert_eq!(occ, vec![0, 1]);
+}
+
+#[test]
+fn a_rename_moves_the_site_without_acting_on_it() {
+    let fx = fixed_one_of_n(RUST_SIBLING);
+    fire(&fx, "HEAD");
+    let r = fx.root.path();
+    git(r, &["mv", "src/b.rs", "src/tags.rs"]);
+    write(r, "src/lib.rs", "pub mod a;\npub mod tags;\n");
+    commit_all(r, "rename");
+    let renamed = sutra::git::head_commit_hash(r).unwrap();
+
+    let out = firings(&fx);
+    let f = &out["firings"][0];
+    assert_eq!(f["site_status"], "present");
+    assert_eq!(f["file_at_head"], "src/tags.rs");
+    assert_eq!(f["moved_in"], renamed.as_str());
+    assert!(f["changed_in"].is_null());
+
+    // A later fix in the renamed file is still found.
+    write(
+        r,
+        "src/tags.rs",
+        &RUST_TYPED.replace("load_refs", "load_tags"),
+    );
+    commit_all(r, "fix tags");
+    let out = firings(&fx);
+    assert_eq!(out["firings"][0]["site_status"], "changed");
+    assert_eq!(out["firings"][0]["moved_in"], renamed.as_str());
+}
+
+#[test]
+fn a_rebase_over_unrelated_context_is_the_same_event() {
+    let fx = fixed_one_of_n(RUST_SIBLING);
+    fire(&fx, "HEAD");
+    let r = fx.root.path();
+    // Rebuild the fix on a base that gained lines above it in a.rs.
+    git(r, &["checkout", "-q", "-b", "moved", "HEAD~1"]);
+    write(
+        r,
+        "src/a.rs",
+        &format!("// header\n// more\n\n{RUST_SWALLOW}"),
+    );
+    commit_all(r, "unrelated context");
+    write(
+        r,
+        "src/a.rs",
+        &format!("// header\n// more\n\n{RUST_TYPED}"),
+    );
+    commit_all(r, "fix a, rebased");
+    fire(&fx, "HEAD");
+
+    let rows = fx.db.firings(None, None).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0].epoch, 0);
+}
+
+#[test]
+fn a_revert_then_identical_reapply_is_a_new_event() {
+    let fx = fixed_one_of_n(RUST_SIBLING);
+    fire(&fx, "HEAD");
+    let r = fx.root.path();
+    git(r, &["revert", "--no-edit", "HEAD"]);
+    git(r, &["revert", "--no-edit", "HEAD"]);
+    fire(&fx, "HEAD");
+    fire(&fx, "HEAD");
+
+    let rows = fx.db.firings(None, None).unwrap();
+    let epochs: Vec<i64> = rows.iter().map(|r| r.epoch).collect();
+    assert_eq!(epochs, vec![0, 1], "{rows:#?}");
+    assert_eq!(rows[0].patch_id, rows[1].patch_id);
+    assert_ne!(rows[0].event_id, rows[1].event_id);
 }
 
 #[test]

@@ -231,7 +231,8 @@ Built into review as `sibling_patterns` in `sutra_review` output and a
 not-gating section of `sutra check --diff` (human and JSON). Code:
 `src/tools/sibling_pattern.rs`. Each flagged survivor is written to the shared
 firing log (`mechanism_firings`, see [sutra-purpose.md](sutra-purpose.md)
-rule 9). `sutra firings` reads it back with a per-site status.
+rule 9). `sutra firings` reads it back with a per-site status measured over
+commits since the firing (sutra/491).
 
 Output: pattern-centric, one finding per idiom (or per group of idioms with
 identical survivors). Each survivor carries its enclosing symbol, from a parse

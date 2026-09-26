@@ -97,14 +97,24 @@ follows these or gives a reason.
    reports `incomplete: <cap>`, never "nothing found" (from sutra/406). The
    same rule applies to SWALLOW in sutra's own code.
 9. **Log firings.** Every mechanism records what it flagged so the acted-on
-   rate can be measured (see Metric). The log is the durable
-   `mechanism_firings` table (`src/db/firings.rs`, built in sutra/467): one
-   row per flagged site (mechanism, finding kind and key, file:line,
-   enclosing symbol, line text), with the diff's identity (spec, revisions,
-   content fingerprint) and the HEAD commit at firing time. Reviewing the
-   same diff twice doesn't add rows. `sutra firings [--mechanism]
-   [--since]` lists rows with a `site_status` (the flagged line is present,
-   changed or its file is gone), the acted-on proxy for sutra/485.
+   rate can be measured (see Metric). The log is durable: `review_events`
+   and `mechanism_firings` (`src/db/firings.rs`, built in sutra/467, split in
+   sutra/491). A review event is one reviewed change, identified by a patch
+   id (each file's removed and added lines, no line numbers or context) plus
+   an epoch that is bumped when a commit reverting the patch lands before it
+   is reviewed again. Reviewing the same diff twice, or after a rebase over
+   unrelated context, adds nothing; a revert followed by an identical
+   reapply is a new event. A firing is one flagged site within an event:
+   mechanism, finding kind and key, file, enclosing symbol, line text and its
+   ordinal among identical lines in that symbol. The line number is for
+   display only. `sutra firings [--mechanism] [--since]` lists rows with a
+   `site_status` computed from commits, never the worktree: walking HEAD's
+   first-parent chain from the event's anchor commit and following renames,
+   a site is `changed` at the first commit that removes a copy of its line
+   from its symbol, `present` otherwise (a rename alone is `present`, with
+   `moved_in`), `file_deleted`, `not_at_anchor` (the line was only in the
+   index or worktree when it fired) or `anchor_unreachable` (history was
+   rewritten). This is the acted-on proxy for sutra/485.
 
 ## What sutra is today
 

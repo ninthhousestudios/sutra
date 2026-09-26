@@ -44,6 +44,7 @@ use crate::parser::adapter::{
 };
 use crate::parser::literals;
 use crate::parser::{ExtractedSymbol, ParseResult, flatten_symbols};
+use crate::tools::firings::{PatchHasher, ReviewedPatch, count_snippet};
 use crate::tools::review::DiffScope;
 use crate::tools::symbol_diff::{
     ChangeKind, UnmatchedSymbol, build_unmatched, classify_symbols, resolve_renames,
@@ -389,6 +390,10 @@ pub struct Survivor {
     /// The survivor's line, trimmed. Recorded in the firing log.
     #[serde(skip)]
     pub snippet: String,
+    /// The survivor's ordinal among identical lines in its symbol (in the file
+    /// when there is none). Part of its site identity in the firing log.
+    #[serde(skip)]
+    pub occurrence: usize,
 }
 
 /// One idiom (or several with the same survivors) that the diff removed and
@@ -411,7 +416,7 @@ pub struct SiblingReport {
     pub incomplete: Vec<String>,
     /// Identity of the reviewed change, for the firing log.
     #[serde(skip)]
-    pub diff_fingerprint: String,
+    pub patch: ReviewedPatch,
 }
 
 /// The three noise controls added after the back-test (docs "Next noise
@@ -1449,7 +1454,7 @@ pub fn analyze(
     )?;
     let mut parsers = Parsers::new();
     let mut report = SiblingReport::default();
-    let mut fingerprint = blake3::Hasher::new();
+    let mut patch = PatchHasher::default();
     let mut changed: Vec<Changed<'_>> = Vec::new();
     // Files changed on both sides, classified, awaiting the cross-file move
     // pass: `(index into changed, hunks, (old, new) path, signals)`.
@@ -1476,11 +1481,7 @@ pub fn analyze(
                 continue;
             }
         };
-        for side in [&old_src, &new_src] {
-            fingerprint.update(path.as_bytes());
-            fingerprint.update(side.as_deref().unwrap_or("").as_bytes());
-            fingerprint.update(b"\0");
-        }
+        patch.add_file(fh, old_src.as_deref(), new_src.as_deref());
         let old_path = fh.old_path.as_deref().unwrap_or(path);
         let new_path = fh.new_path.as_deref().unwrap_or(path);
         let lang = language_key(adapter);
@@ -1537,7 +1538,7 @@ pub fn analyze(
             language: lang,
         });
     }
-    report.diff_fingerprint = fingerprint.finalize().to_hex().to_string();
+    report.patch = patch.finish();
     let mut moved = moved_spans(&unmatched_old, &unmatched_new);
     let mut signals = HunkSignals::default();
     for (i, fh, (old_path, new_path), mut symbols) in pending {
@@ -1677,17 +1678,24 @@ pub fn analyze(
     for f in findings {
         let mut survivors = Vec::with_capacity(f.survivors.len());
         for site in f.survivors {
+            let span = symbols.enclosing(
+                &mut parsers,
+                registry,
+                &sources,
+                site,
+                &mut report.incomplete,
+            );
+            let snippet = occ.snippets.remove(&site).unwrap_or_default();
+            let start = span.as_ref().map_or(1, |(start, _, _)| *start);
+            let occurrence = sources
+                .get(site.0)
+                .map_or(0, |src| count_snippet(src, start..site.1, &snippet));
             survivors.push(Survivor {
                 file: site.0.to_string(),
                 line: site.1,
-                symbol: symbols.enclosing(
-                    &mut parsers,
-                    registry,
-                    &sources,
-                    site,
-                    &mut report.incomplete,
-                ),
-                snippet: occ.snippets.remove(&site).unwrap_or_default(),
+                symbol: span.map(|(_, _, name)| name),
+                snippet,
+                occurrence,
             });
         }
         report.findings.push(SiblingFinding {
@@ -1868,10 +1876,11 @@ fn group_by_survivors(findings: Vec<Grouped<'_>>) -> Vec<Grouped<'_>> {
 /// file: `(start_line, end_line, qualified_name)`.
 #[derive(Default)]
 struct SymbolLookup<'a> {
-    files: HashMap<&'a str, Vec<(usize, usize, String)>>,
+    files: HashMap<&'a str, Vec<SymbolSpan>>,
 }
 
 impl<'a> SymbolLookup<'a> {
+    /// The innermost symbol holding the site: `(start_line, end_line, name)`.
     fn enclosing(
         &mut self,
         parsers: &mut Parsers,
@@ -1879,30 +1888,43 @@ impl<'a> SymbolLookup<'a> {
         sources: &HashMap<&str, String>,
         (path, line): Site<'a>,
         incomplete: &mut Vec<String>,
-    ) -> Option<String> {
+    ) -> Option<SymbolSpan> {
         let spans = self.files.entry(path).or_insert_with(|| {
-            let (Some(adapter), Some(source)) =
-                (adapter_for_path(registry, path), sources.get(path))
-            else {
+            let Some(source) = sources.get(path) else {
                 return Vec::new();
             };
-            match parsers.parse(adapter, source, path) {
-                Ok(parse) => flatten_symbols(&parse.symbols)
-                    .into_iter()
-                    .map(|s| (s.start_line, s.end_line, s.qualified_name.to_string()))
-                    .collect(),
-                Err(e) => {
-                    incomplete.push(format!("{path}: {e}"));
-                    Vec::new()
-                }
-            }
+            symbol_spans(&mut parsers.pool, registry, path, source).unwrap_or_else(|e| {
+                incomplete.push(format!("{path}: {e}"));
+                Vec::new()
+            })
         });
         spans
             .iter()
             .filter(|(start, end, _)| *start <= line && line <= *end)
             .min_by_key(|(start, end, _)| end - start)
-            .map(|(_, _, name)| name.to_string())
+            .cloned()
     }
+}
+
+/// `(start_line, end_line, qualified_name)` of one symbol.
+pub(crate) type SymbolSpan = (usize, usize, String);
+
+/// Every symbol's span in `source`. Empty for a language the check does not
+/// read.
+pub(crate) fn symbol_spans(
+    pool: &mut ParserPool,
+    registry: &LanguageRegistry,
+    path: &str,
+    source: &str,
+) -> Result<Vec<SymbolSpan>> {
+    let Some(adapter) = adapter_for_path(registry, path) else {
+        return Ok(Vec::new());
+    };
+    let parse = pool.parse_with(adapter, source, path)?;
+    Ok(flatten_symbols(&parse.symbols)
+        .into_iter()
+        .map(|s| (s.start_line, s.end_line, s.qualified_name.to_string()))
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -1994,8 +2016,8 @@ pub fn record_firings(
         base_rev: Some(&scope.base_revision),
         head_rev: scope.head_revision.as_deref(),
         anchor_commit: anchor.as_deref(),
-        diff_fingerprint: &report.diff_fingerprint,
     };
+    let event_id = crate::tools::firings::resolve_event(db, workspace_root, &ctx, &report.patch)?;
     let keys: Vec<(String, &str)> = report
         .findings
         .iter()
@@ -2020,10 +2042,12 @@ pub fn record_firings(
                 ),
                 symbol: s.symbol.as_deref(),
                 snippet: Some(&s.snippet),
+                occurrence: i64::try_from(s.occurrence)
+                    .expect("invariant: a line count fits in i64"),
             })
         })
         .collect();
-    db.record_firings(&ctx, &records)
+    db.record_firings(event_id, &records)
 }
 
 #[cfg(test)]

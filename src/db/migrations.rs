@@ -548,6 +548,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0090_string_literals.sql"),
         true,
     ),
+    // Firing log: review events apart from sites (sutra/491). Durable;
+    // rebuilds mechanism_firings and carries its rows over.
+    (
+        "0091_firing_events",
+        include_str!("../../migrations/0091_firing_events.sql"),
+        false,
+    ),
 ];
 
 impl Db {

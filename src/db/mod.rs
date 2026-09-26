@@ -239,6 +239,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         partition: TablePartition::Durable,
         is_virtual: false,
     },
+    TableMeta {
+        name: "review_events",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------

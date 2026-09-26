@@ -57,25 +57,135 @@ fn git_diff_entries(workspace_root: &Path, extra: &[&str]) -> Result<Vec<DiffFil
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();
-    for line in stdout.lines().filter(|l| !l.is_empty()) {
-        let parts: Vec<&str> = line.split('\t').collect();
-        match parts.as_slice() {
-            [status, old, new] if status.starts_with('R') || status.starts_with('C') => {
-                entries.push(DiffFileEntry {
-                    path: new.to_string(),
-                    old_path: Some(old.to_string()),
-                });
-            }
-            [_status, path] => {
-                entries.push(DiffFileEntry {
-                    path: path.to_string(),
-                    old_path: None,
-                });
-            }
-            _ => {}
-        }
+    for line in stdout.lines() {
+        entries.extend(parse_name_status_line(line));
     }
     Ok(entries)
+}
+
+/// One `--name-status` line: `R087\told\tnew` for a rename or copy, else
+/// `M\tpath`. `None` for anything else (blank, a format header).
+fn parse_name_status_line(line: &str) -> Option<DiffFileEntry> {
+    let parts: Vec<&str> = line.split('\t').collect();
+    match parts.as_slice() {
+        [status, old, new] if status.starts_with('R') || status.starts_with('C') => {
+            Some(DiffFileEntry {
+                path: new.to_string(),
+                old_path: Some(old.to_string()),
+            })
+        }
+        [_status, path] => Some(DiffFileEntry {
+            path: path.to_string(),
+            old_path: None,
+        }),
+        _ => None,
+    }
+}
+
+/// Whether `ancestor` is `descendant` or one of its ancestors. `Ok(false)`
+/// also when either does not name a commit here (a rebased-away anchor that
+/// was collected); a failure to run git is an error.
+pub fn is_ancestor(workspace_root: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let resolve = |rev| match resolve_commit(workspace_root, rev) {
+        Ok(oid) => Ok(Some(oid)),
+        Err(SutraError::InvalidArgument { .. }) => Ok(None),
+        Err(e) => Err(e),
+    };
+    let (Some(a), Some(d)) = (resolve(ancestor)?, resolve(descendant)?) else {
+        return Ok(false);
+    };
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["merge-base", "--is-ancestor", &a, &d])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git merge-base failed: {e}")))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(SutraError::Internal(format!(
+            "git merge-base --is-ancestor: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))),
+    }
+}
+
+/// Where a first-parent commit walk starts.
+#[derive(Debug, Clone, Copy)]
+pub enum WalkFrom<'a> {
+    /// Commits after this one: `commit..head`.
+    After(&'a str),
+    /// Commits dated at or after this ISO-8601 time, for an anchor that is no
+    /// longer an ancestor (history was rewritten).
+    Since(&'a str),
+}
+
+/// A commit on the first-parent chain and the files it changed against its
+/// first parent, renames detected.
+#[derive(Debug, Clone)]
+pub struct CommitChanges {
+    pub hash: String,
+    /// `None` for a root commit.
+    pub first_parent: Option<String>,
+    pub entries: Vec<DiffFileEntry>,
+}
+
+/// The first-parent commits from `from` to `head`, oldest first. A merge is
+/// diffed against its first parent, so what it brought in counts as its change.
+pub fn git_first_parent_changes(
+    workspace_root: &Path,
+    from: WalkFrom<'_>,
+    head: &str,
+) -> Result<Vec<CommitChanges>> {
+    let head = resolve_commit(workspace_root, head)?;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(workspace_root)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "--reverse",
+            "--first-parent",
+        ])
+        .args(["--diff-merges=first-parent", "-M", "--name-status"])
+        .arg("--format=%x01%H %P");
+    match from {
+        WalkFrom::After(base) => {
+            let base = resolve_commit(workspace_root, base)?;
+            cmd.args(["--end-of-options", &format!("{base}..{head}")]);
+        }
+        WalkFrom::Since(since) => {
+            cmd.arg(format!("--since={since}"))
+                .args(["--end-of-options", &head]);
+        }
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git log: {stderr}")));
+    }
+    let mut commits: Vec<CommitChanges> = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(header) = line.strip_prefix('\u{1}') {
+            let mut parts = header.split_whitespace();
+            let Some(hash) = parts.next() else {
+                return Err(SutraError::Internal(format!(
+                    "git log: bad header {header:?}"
+                )));
+            };
+            commits.push(CommitChanges {
+                hash: hash.to_string(),
+                first_parent: parts.next().map(str::to_string),
+                entries: Vec::new(),
+            });
+        } else if let (Some(c), Some(e)) = (commits.last_mut(), parse_name_status_line(line)) {
+            c.entries.push(e);
+        }
+    }
+    Ok(commits)
 }
 
 /// One `-U0` hunk: the removed lines are `old_start..old_start + old_len` on
@@ -910,23 +1020,8 @@ pub fn git_commit_changed_files(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut entries = Vec::new();
-    for line in stdout.lines().filter(|l| !l.is_empty()) {
-        let parts: Vec<&str> = line.split('\t').collect();
-        match parts.as_slice() {
-            [status, old, new] if status.starts_with('R') || status.starts_with('C') => {
-                entries.push(DiffFileEntry {
-                    path: new.to_string(),
-                    old_path: Some(old.to_string()),
-                });
-            }
-            [_status, path] => {
-                entries.push(DiffFileEntry {
-                    path: path.to_string(),
-                    old_path: None,
-                });
-            }
-            _ => {}
-        }
+    for line in stdout.lines() {
+        entries.extend(parse_name_status_line(line));
     }
     Ok(entries)
 }

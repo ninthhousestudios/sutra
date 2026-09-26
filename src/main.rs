@@ -133,8 +133,8 @@ enum Commands {
         format: String,
     },
     /// List the write-side firing log (JSON): each site a review mechanism
-    /// flagged, and whether its line has changed since. The workspace is
-    /// resolved from the current directory.
+    /// flagged, and whether a commit since its firing changed it. The
+    /// workspace is resolved from the current directory.
     Firings {
         /// Only this mechanism (e.g. "sibling_pattern").
         #[arg(long)]
@@ -855,7 +855,14 @@ fn cmd_firings(
     let cwd = std::env::current_dir()?;
     let ws = workspace::resolve_workspace(&ws_config, &cwd.to_string_lossy())?;
     let db = Db::open_for_workspace(ws, &config.db_dir)?;
-    let out = sutra::tools::firings::handle(&db, std::path::Path::new(&ws.root), mechanism, since)?;
+    let registry = sutra::parser::adapter::default_registry();
+    let out = sutra::tools::firings::handle(
+        &db,
+        std::path::Path::new(&ws.root),
+        &registry,
+        mechanism,
+        since,
+    )?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
