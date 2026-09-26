@@ -3,6 +3,7 @@ pub mod c;
 pub mod complexity;
 pub mod dart;
 pub mod javascript;
+pub mod literals;
 pub mod persist;
 pub mod python;
 pub mod rust;

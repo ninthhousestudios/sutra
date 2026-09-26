@@ -135,6 +135,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         is_virtual: false,
     },
     TableMeta {
+        name: "string_literals",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
         name: "snapshots",
         partition: TablePartition::Ephemeral,
         is_virtual: false,
@@ -900,6 +905,7 @@ impl Db {
         parent_indices: &[Option<usize>],
         imports: &[InsertImportParams<'_>],
         refs: &[InsertRefParams<'_>],
+        literals: &[crate::parser::literals::ExtractedLiteral],
     ) -> Result<(i64, i64)> {
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock();
@@ -927,7 +933,7 @@ impl Db {
             //
             // Child-table lifecycle audit (every table FK'd to files/symbols):
             //   REPLACE (extraction):  symbols, refs (outgoing), imports,
-            //                          symbols_fts.
+            //                          string_literals, symbols_fts.
             //   INVALIDATE (derived):  hrr_file_hashes, plus hrr_vectors and
             //                          pattern_family_members (cascade off the
             //                          symbols delete).
@@ -995,6 +1001,10 @@ impl Db {
             conn.execute("DELETE FROM symbols WHERE file_id = ?1", params![old_id])?;
             conn.execute("DELETE FROM refs WHERE file_id = ?1", params![old_id])?;
             conn.execute("DELETE FROM imports WHERE file_id = ?1", params![old_id])?;
+            conn.execute(
+                "DELETE FROM string_literals WHERE file_id = ?1",
+                params![old_id],
+            )?;
 
             // Invalidate extraction-derived analysis that is keyed by file_id and
             // therefore survives the symbol cascade. Preserving the file id must
@@ -1138,6 +1148,15 @@ impl Db {
                 rf.receiver,
                 rf.qualifier
             ])?;
+        }
+
+        for lit in literals {
+            let line =
+                i64::try_from(lit.line).expect("invariant: a source line number fits in i64");
+            conn.prepare_cached(
+                "INSERT INTO string_literals (file_id, line, text) VALUES (?1, ?2, ?3)",
+            )?
+            .execute(params![file_id, line, lit.text])?;
         }
 
         conn.execute(
@@ -1762,6 +1781,28 @@ impl Db {
                 .query_map(params![name], |row| row.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<std::collections::HashSet<i64>>>()?;
             out.insert(name.to_string(), ids);
+        }
+        Ok(out)
+    }
+
+    /// For each literal index key (`parser::literals::index_key`), the ids of
+    /// the files holding a literal with that key (sutra/494).
+    pub fn files_with_literals(
+        &self,
+        keys: &[&str],
+    ) -> Result<std::collections::HashMap<String, std::collections::HashSet<i64>>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare_cached("SELECT DISTINCT file_id FROM string_literals WHERE text = ?1")?;
+        let mut out = std::collections::HashMap::new();
+        for &key in keys {
+            if out.contains_key(key) {
+                continue;
+            }
+            let ids = stmt
+                .query_map(params![key], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<std::collections::HashSet<i64>>>()?;
+            out.insert(key.to_string(), ids);
         }
         Ok(out)
     }

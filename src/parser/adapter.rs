@@ -34,18 +34,47 @@ impl ParserPool {
         source: &str,
         file_path: &str,
     ) -> Result<ParseResult> {
-        let lang_id = adapter.language_id().to_string();
-        if !self.parsers.contains_key(&lang_id) {
-            let mut p = Parser::new();
-            p.set_language(&adapter.grammar()).map_err(|e| {
-                SutraError::Parse(format!("failed to set language for {}: {e}", lang_id))
-            })?;
-            #[allow(deprecated)]
-            // tree-sitter 0.25 prefers progress_callback; migrate when 0.26 drops the old API
-            p.set_timeout_micros(self.timeout_micros);
-            self.parsers.insert(lang_id.clone(), p);
-        }
-        let parser = self.parsers.get_mut(&lang_id).unwrap();
+        self.parse_tree(adapter, source, file_path)
+            .map(|(_, result)| result)
+    }
+
+    /// [`parse_with`](Self::parse_with) plus the file's string literals, for
+    /// the index (empty for a language whose literals are not indexed).
+    pub fn parse_for_index(
+        &mut self,
+        adapter: &dyn LanguageAdapter,
+        source: &str,
+        file_path: &str,
+    ) -> Result<(ParseResult, Vec<super::literals::ExtractedLiteral>)> {
+        let (tree, result) = self.parse_tree(adapter, source, file_path)?;
+        let literals = if super::literals::indexed_language(adapter.language_id()) {
+            super::literals::extract(&tree, source.as_bytes())
+        } else {
+            Vec::new()
+        };
+        Ok((result, literals))
+    }
+
+    fn parse_tree(
+        &mut self,
+        adapter: &dyn LanguageAdapter,
+        source: &str,
+        file_path: &str,
+    ) -> Result<(Tree, ParseResult)> {
+        let lang_id = adapter.language_id();
+        let parser = match self.parsers.entry(lang_id.to_string()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let mut p = Parser::new();
+                p.set_language(&adapter.grammar()).map_err(|e| {
+                    SutraError::Parse(format!("failed to set language for {lang_id}: {e}"))
+                })?;
+                #[allow(deprecated)]
+                // tree-sitter 0.25 prefers progress_callback; migrate when 0.26 drops the old API
+                p.set_timeout_micros(self.timeout_micros);
+                e.insert(p)
+            }
+        };
 
         let tree = parser.parse(source, None).ok_or_else(|| {
             SutraError::Parse("tree-sitter parse timed out or returned no tree".into())
@@ -67,7 +96,7 @@ impl ParserPool {
                 imp.is_test = true;
             }
         }
-        Ok(result)
+        Ok((tree, result))
     }
 
     #[cfg(test)]

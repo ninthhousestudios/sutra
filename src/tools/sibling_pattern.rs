@@ -9,9 +9,11 @@
 //! `docs/sibling-pattern-backtest.md`. This is a port of the frozen v6
 //! prototype (`experiments/sibling-pattern/proto.py`) with the regex tokenizer
 //! replaced by tree-sitter leaves, move/reformat detection by
-//! [`classify_symbols`], and the wrap signal by parser call refs. Survivors
-//! are searched in the diff's head-side snapshot, never the worktree unless
-//! that is the reviewed side. `tests/sibling-backtest-test.rs` asserts the
+//! [`classify_symbols`] and [`resolve_renames`], and the wrap signal by
+//! `callee_diff` (sutra/494). Survivors are searched in the diff's head-side
+//! snapshot, never the worktree unless that is the reviewed side; there the
+//! index (call refs, `string_literals`) picks the files to read. The scan is
+//! capped by a [`Budget`]. `tests/sibling-backtest-test.rs` asserts the
 //! back-test and noise ceiling; `experiments/sibling-pattern/run.sh` prints
 //! them.
 //!
@@ -40,9 +42,12 @@ use crate::parser::adapter::{
     LanguageAdapter, LanguageRegistry, ParseContext, ParserPool, line_in_ranges, node_text,
     path_has_dir_segment,
 };
-use crate::parser::{ParseResult, RefContextKind, flatten_symbols};
+use crate::parser::literals;
+use crate::parser::{ExtractedSymbol, ParseResult, flatten_symbols};
 use crate::tools::review::DiffScope;
-use crate::tools::symbol_diff::{ChangeKind, classify_symbols};
+use crate::tools::symbol_diff::{
+    ChangeKind, UnmatchedSymbol, build_unmatched, classify_symbols, resolve_renames,
+};
 
 /// The mechanism name in the firing log.
 pub const MECHANISM: &str = "sibling_pattern";
@@ -55,9 +60,14 @@ const MAX_DF: usize = 40;
 /// Two literals further apart than this many tokens are not one list.
 const PAIR_TOKENS: usize = 30;
 const MIN_SQL: usize = 30;
-const SQL_PREFIX: usize = 40;
+/// The index keys a literal by this prefix, so an SQL idiom's prefix is its key.
+const SQL_PREFIX: usize = literals::PREFIX_CHARS;
 /// Longest literal (quotes included) that can be a list item.
 const MAX_LIT: usize = 40;
+const _: () = assert!(
+    MAX_LIT <= literals::PREFIX_CHARS,
+    "a list item must be its own index key"
+);
 /// Lines around a hunk in which a re-added idiom counts as wrapped in place.
 const NEAR: usize = 40;
 /// An idiom removed at this many hunks is a sweep; its survivors are the
@@ -325,10 +335,6 @@ static KEYWORD_SET: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| KEYWORDS.iter().copied().collect());
 static GENERIC_SET: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| GENERIC.iter().copied().collect());
-static LINE_CONTINUATION: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\\\s*\n\s*").expect("invariant: static regex compiles"));
-static WHITESPACE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\s+").expect("invariant: static regex compiles"));
 static TEST_FILE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"[-_]test\.(rs|dart)$").expect("invariant: static regex compiles")
 });
@@ -449,6 +455,38 @@ impl Controls {
     }
 }
 
+/// How long the survivor scan over unchanged files may run. Review latency
+/// otherwise grows with the tree, most of all for a snapshot side, where the
+/// index cannot narrow and every candidate file is read. A scan that runs out
+/// stops and says so in `incomplete`; it never reads as clean.
+#[derive(Debug, Clone, Copy)]
+pub struct Budget {
+    pub scan_time: std::time::Duration,
+}
+
+impl Budget {
+    const DEFAULT_MS: u64 = 5_000;
+
+    /// The default, or `SUTRA_SIBLING_BUDGET_MS` when set to a number.
+    pub fn from_env() -> Self {
+        let ms = std::env::var("SUTRA_SIBLING_BUDGET_MS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(Self::DEFAULT_MS);
+        Self {
+            scan_time: std::time::Duration::from_millis(ms),
+        }
+    }
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self {
+            scan_time: std::time::Duration::from_millis(Self::DEFAULT_MS),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tokens
 // ---------------------------------------------------------------------------
@@ -471,11 +509,6 @@ struct Token {
 
 fn is_comment(kind: &str) -> bool {
     kind.contains("comment")
-}
-
-fn normalize_string(text: &str) -> String {
-    let joined = LINE_CONTINUATION.replace_all(text, " ");
-    WHITESPACE.replace_all(&joined, " ").into_owned()
 }
 
 /// The leaf tokens of `tree`, comments dropped, with string literals kept
@@ -502,7 +535,7 @@ fn tokenize(tree: &Tree, src: &[u8]) -> Vec<Token> {
             let text = if tok_kind == TokKind::Other {
                 text.to_string()
             } else {
-                normalize_string(text)
+                literals::normalize(text)
             };
             out.push(Token {
                 text,
@@ -606,6 +639,17 @@ impl Feature {
             Self::Chain { method, .. } => Some(method),
             Self::Argfld { callee, .. } => Some(bare_name(callee)),
             Self::Litpair(..) | Self::Sql(_) | Self::GrownList { .. } => None,
+        }
+    }
+
+    /// Index keys of the literals every occurrence contains, so the index can
+    /// narrow the survivor search for literal and SQL idioms.
+    fn literal_keys(&self) -> Vec<String> {
+        match self {
+            Self::Litpair(a, b) => vec![literals::index_key(a), literals::index_key(b)],
+            Self::GrownList { old, .. } => old.iter().map(|o| literals::index_key(o)).collect(),
+            Self::Sql(prefix) => vec![literals::index_key(prefix)],
+            Self::Chain { .. } | Self::Argfld { .. } => Vec::new(),
         }
     }
 
@@ -1048,45 +1092,138 @@ fn language_key(adapter: &dyn LanguageAdapter) -> &'static str {
     }
 }
 
-/// Non-generic call names on `lines`, named as the idioms name them
-/// (`f`, `a::f`, `.f`).
-fn callees_on(parse: &ParseResult, lines: &dyn Fn(usize) -> bool) -> HashSet<String> {
-    parse
-        .references
-        .iter()
-        .filter(|r| r.context_kind == RefContextKind::Call && lines(r.line))
-        .filter_map(|r| {
-            let name = match (&r.qualifier, &r.receiver) {
-                (Some(q), _) => format!("{}::{}", bare_name(q), r.name),
-                (None, Some(_)) => format!(".{}", r.name),
-                (None, None) => r.name.to_string(),
-            };
-            (!is_generic(&r.name, &name)).then_some(name)
-        })
-        .collect()
+/// What symbol classification says about one changed file (sutra/494): which
+/// old code the diff kept, and which new symbols gained a call.
+#[derive(Default)]
+struct SymbolSignals {
+    /// Old-side spans whose substance the diff kept: reformatted
+    /// (`CosmeticChanged`), unchanged but shifted within the file, or moved to
+    /// another file (added once [`resolve_renames`] has seen every file). A
+    /// hunk inside one rewrote nothing.
+    kept_old: Vec<(usize, usize)>,
+    /// New-side symbol spans, each with whether `callee_diff` says the symbol
+    /// gained a non-generic callee.
+    new_spans: Vec<(usize, usize, bool)>,
 }
 
-/// Old-side line spans of symbols the diff only reformatted.
-fn cosmetic_spans(
-    old_parse: &ParseResult,
-    new_parse: &ParseResult,
-    old_src: &str,
-    new_src: &str,
-    old_path: &str,
-    new_path: &str,
-) -> Vec<(usize, usize)> {
-    let result = classify_symbols(old_parse, new_parse, old_src, new_src, old_path, new_path);
-    let cosmetic: HashSet<&str> = result
-        .changes
+impl SymbolSignals {
+    /// Classify one file changed on both sides, returning the symbols
+    /// classification left unmatched for the cross-file move pass.
+    fn classify(
+        parses: (&ParseResult, &ParseResult),
+        sources: (&str, &str),
+        paths: (&str, &str),
+    ) -> (Self, Vec<UnmatchedSymbol>, Vec<UnmatchedSymbol>) {
+        let (old_parse, new_parse) = parses;
+        let result = classify_symbols(old_parse, new_parse, sources.0, sources.1, paths.0, paths.1);
+        let changed: HashSet<&str> = result.changes.iter().map(|c| c.symbol.as_str()).collect();
+        let cosmetic: HashSet<&str> = result
+            .changes
+            .iter()
+            .filter(|c| c.change == ChangeKind::CosmeticChanged)
+            .map(|c| c.symbol.as_str())
+            .collect();
+        let gained: HashSet<&str> = result
+            .changes
+            .iter()
+            .filter(|c| {
+                c.callee_diff
+                    .as_ref()
+                    .is_some_and(|cd| cd.added.iter().any(|n| !is_generic(n, n)))
+            })
+            .map(|c| c.symbol.as_str())
+            .collect();
+        let new_flat = flatten_symbols(&new_parse.symbols);
+        let new_keys: HashSet<(&str, &str)> = new_flat
+            .iter()
+            .map(|s| (s.qualified_name.as_str(), s.kind.as_str()))
+            .collect();
+        let kept_old = flatten_symbols(&old_parse.symbols)
+            .into_iter()
+            .filter(|s| {
+                let name = s.qualified_name.as_str();
+                cosmetic.contains(name)
+                    || (new_keys.contains(&(name, s.kind.as_str())) && !changed.contains(name))
+            })
+            .map(span)
+            .collect();
+        let new_spans = new_flat
+            .iter()
+            .map(|s| {
+                let (start, end) = span(s);
+                (start, end, gained.contains(s.qualified_name.as_str()))
+            })
+            .collect();
+        (
+            Self {
+                kept_old,
+                new_spans,
+            },
+            result.unmatched_old,
+            result.unmatched_new,
+        )
+    }
+
+    /// Whether the removed lines sit inside code the diff kept.
+    fn kept(&self, removed: &std::ops::Range<usize>) -> bool {
+        self.kept_old
+            .iter()
+            .any(|&(s, e)| s <= removed.start && removed.end <= e + 1)
+    }
+
+    /// Whether the innermost symbols around a hunk's added lines gained a
+    /// non-generic callee: new code wrapped around the old.
+    fn gains_callee(&self, added: &std::ops::Range<usize>) -> bool {
+        let Some(last) = added.end.checked_sub(1) else {
+            return false;
+        };
+        let around: Vec<&(usize, usize, bool)> = self
+            .new_spans
+            .iter()
+            .filter(|(s, e, _)| *s <= last && added.start <= *e)
+            .collect();
+        around
+            .iter()
+            .filter(|a| {
+                !around
+                    .iter()
+                    .any(|b| a.0 <= b.0 && b.1 <= a.1 && (a.0, a.1) != (b.0, b.1))
+            })
+            .any(|a| a.2)
+    }
+}
+
+fn span(s: &ExtractedSymbol) -> (usize, usize) {
+    (s.start_line, s.end_line)
+}
+
+/// Old-side spans, by file, of symbols moved to another file with their body
+/// (or its structure) intact: the cross-file half of [`SymbolSignals::kept_old`].
+fn moved_spans(
+    unmatched_old: &[UnmatchedSymbol],
+    unmatched_new: &[UnmatchedSymbol],
+) -> HashMap<String, Vec<(usize, usize)>> {
+    let by_name: HashMap<(&str, &str), &UnmatchedSymbol> = unmatched_old
         .iter()
-        .filter(|c| c.change == ChangeKind::CosmeticChanged)
-        .map(|c| c.symbol.as_str())
+        .map(|s| ((s.file.as_str(), s.qualified_name.as_str()), s))
         .collect();
-    flatten_symbols(&old_parse.symbols)
-        .iter()
-        .filter(|s| cosmetic.contains(s.qualified_name.as_str()))
-        .map(|s| (s.start_line, s.end_line))
-        .collect()
+    let mut out: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+    for (_, change) in resolve_renames(unmatched_old, unmatched_new).changes {
+        if change.change != ChangeKind::Moved {
+            continue;
+        }
+        let Some(file) = change.from_file.as_deref() else {
+            continue;
+        };
+        let name = change.from_symbol.as_deref().unwrap_or(&change.symbol);
+        if let Some(old) = by_name.get(&(file, name)) {
+            let end = old.start_line + old.content.lines().count().max(1) - 1;
+            out.entry(file.to_string())
+                .or_default()
+                .push((old.start_line, end));
+        }
+    }
+    out
 }
 
 /// Both sides of one changed file: `(old, new)` source.
@@ -1110,33 +1247,23 @@ fn read_sides(
 #[derive(Default)]
 struct HunkSignals<'a> {
     removed: BTreeMap<Key, Removed<'a>>,
-    /// Hunks that add a new non-generic call near where they removed code.
+    /// Hunks whose enclosing symbol gained a non-generic callee.
     wraps: HashSet<usize>,
     next_id: usize,
 }
 
 impl<'a> HunkSignals<'a> {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one changed file's two sides, each as source, tokens and parse"
-    )]
     fn collect(
         &mut self,
         fh: &'a git::FileHunks,
         paths: (&'a str, &'a str),
-        sources: (&str, &str),
         tokens: (&FileTokens, &FileTokens),
-        parses: (&ParseResult, &ParseResult),
-        added: &HashSet<usize>,
+        symbols: &SymbolSignals,
         lang: &'static str,
         controls: Controls,
     ) {
         let (old_path, new_path) = paths;
         let (old_toks, new_toks) = tokens;
-        let (old_parse, new_parse) = parses;
-        let cosmetic = cosmetic_spans(
-            old_parse, new_parse, sources.0, sources.1, old_path, new_path,
-        );
         for hunk in &fh.hunks {
             if hunk.old_len == 0 {
                 continue;
@@ -1146,24 +1273,15 @@ impl<'a> HunkSignals<'a> {
             if hunk.new_len == 0 {
                 continue; // pure deletion: deleted code is not a rewritten idiom
             }
-            let removed_range = hunk.removed_lines();
             let rem = tokens_in(&old_toks.tokens, hunk.removed_lines());
             let add = tokens_in(&new_toks.tokens, hunk.added_lines());
             if token_multiset(rem) == token_multiset(add) {
                 continue; // formatting only
             }
-            if cosmetic
-                .iter()
-                .any(|&(s, e)| s <= removed_range.start && removed_range.end <= e + 1)
-            {
-                continue; // inside a symbol the diff only reformatted
+            if symbols.kept(&hunk.removed_lines()) {
+                continue; // inside a symbol the diff only reformatted or moved
             }
-            let lo = hunk.new_start.saturating_sub(NEAR);
-            let hi = hunk.new_start + hunk.new_len + NEAR;
-            let near_added =
-                callees_on(new_parse, &|l| (lo..=hi).contains(&l) && added.contains(&l));
-            let removed_calls = callees_on(old_parse, &|l| removed_range.contains(&l));
-            if near_added.difference(&removed_calls).next().is_some() {
+            if symbols.gains_callee(&hunk.added_lines()) {
                 self.wraps.insert(hid);
             }
             let mut found = features(rem, Scope::Removed);
@@ -1229,10 +1347,12 @@ impl<'a> Occurrences<'a> {
 /// The unchanged files of the reviewed snapshot, where survivors are searched.
 enum SurvivorTree {
     /// The worktree (an unstaged review): the index lists the files and
-    /// narrows call idioms to files with a call ref of that name.
+    /// narrows each idiom to the files holding its call name (call idioms) or
+    /// all of its literals (literal and SQL idioms).
     Worktree {
         files: Vec<crate::db::FileRow>,
         call_files: HashMap<String, HashSet<i64>>,
+        literal_files: HashMap<String, HashSet<i64>>,
     },
     /// The index (a staged review) or a commit: git lists the files and every
     /// one is read from that snapshot. The sutra index describes the worktree,
@@ -1243,20 +1363,30 @@ enum SurvivorTree {
 impl SurvivorTree {
     /// The file list, plus the reader for a snapshot side (`None` reads the
     /// worktree).
-    fn open(
+    fn open<'k>(
         db: &Db,
         workspace_root: &Path,
         scope: &DiffScope,
-        call_names: &[&str],
+        features: impl Iterator<Item = &'k Feature>,
     ) -> Result<(Self, Option<git::SnapshotReader>)> {
         Ok(match scope.head_revision.as_deref() {
-            None => (
-                Self::Worktree {
-                    files: db.all_files()?,
-                    call_files: db.files_with_calls_named(call_names)?,
-                },
-                None,
-            ),
+            None => {
+                let mut call_names = Vec::new();
+                let mut literal_keys = Vec::new();
+                for f in features {
+                    call_names.extend(f.call_name());
+                    literal_keys.extend(f.literal_keys());
+                }
+                let literal_keys: Vec<&str> = literal_keys.iter().map(String::as_str).collect();
+                (
+                    Self::Worktree {
+                        files: db.all_files()?,
+                        call_files: db.files_with_calls_named(&call_names)?,
+                        literal_files: db.files_with_literals(&literal_keys)?,
+                    },
+                    None,
+                )
+            }
             Some(rev) => (
                 Self::Snapshot {
                     paths: git::snapshot_files(workspace_root, rev)?
@@ -1279,12 +1409,25 @@ impl SurvivorTree {
 
     /// Whether the file can hold `feat` as far as the index knows.
     fn may_hold(&self, file_id: Option<i64>, feat: &Feature) -> bool {
-        match (self, file_id, feat.call_name()) {
-            (Self::Worktree { call_files, .. }, Some(id), Some(name)) => {
-                call_files.get(name).is_some_and(|ids| ids.contains(&id))
-            }
-            _ => true,
-        }
+        let (
+            Self::Worktree {
+                call_files,
+                literal_files,
+                ..
+            },
+            Some(id),
+        ) = (self, file_id)
+        else {
+            return true;
+        };
+        let held = |files: &HashMap<String, HashSet<i64>>, key: &str| {
+            files.get(key).is_some_and(|ids| ids.contains(&id))
+        };
+        feat.call_name().is_none_or(|name| held(call_files, name))
+            && feat
+                .literal_keys()
+                .iter()
+                .all(|key| held(literal_files, key))
     }
 }
 
@@ -1297,6 +1440,7 @@ pub fn analyze(
     scope: &DiffScope,
     registry: &LanguageRegistry,
     controls: Controls,
+    budget: Budget,
 ) -> Result<SiblingReport> {
     let file_hunks = git::git_diff_hunks(
         workspace_root,
@@ -1307,7 +1451,10 @@ pub fn analyze(
     let mut report = SiblingReport::default();
     let mut fingerprint = blake3::Hasher::new();
     let mut changed: Vec<Changed<'_>> = Vec::new();
-    let mut signals = HunkSignals::default();
+    // Files changed on both sides, classified, awaiting the cross-file move
+    // pass: `(index into changed, hunks, (old, new) path, signals)`.
+    let mut pending: Vec<(usize, &git::FileHunks, (&str, &str), SymbolSignals)> = Vec::new();
+    let (mut unmatched_old, mut unmatched_new) = (Vec::new(), Vec::new());
     // Head-side source of every file that may hold a survivor, for naming the
     // enclosing symbol.
     let mut sources: HashMap<&str, String> = HashMap::new();
@@ -1351,23 +1498,33 @@ pub fn analyze(
         let new = tokens_of(&new_src, new_path);
         let added: HashSet<usize> = fh.hunks.iter().flat_map(|h| h.added_lines()).collect();
 
-        if let (Some(o), Some(n), Some(ot), Some(nt)) = (&old_src, &new_src, &old, &new) {
-            match (
-                parsers.parse(adapter, o, old_path),
-                parsers.parse(adapter, n, new_path),
-            ) {
-                (Ok(op), Ok(np)) => signals.collect(
-                    fh,
-                    (old_path, new_path),
-                    (o, n),
-                    (ot, nt),
-                    (&op, &np),
-                    &added,
-                    lang,
-                    controls,
-                ),
-                (Err(e), _) | (_, Err(e)) => report.incomplete.push(format!("{path}: {e}")),
+        let mut parse = |src: &Option<String>, p: &str| -> Option<ParseResult> {
+            let src = src.as_deref()?;
+            match parsers.parse(adapter, src, p) {
+                Ok(parse) => Some(parse),
+                Err(e) => {
+                    report.incomplete.push(format!("{p}: {e}"));
+                    None
+                }
             }
+        };
+        let (old_parse, new_parse) = (parse(&old_src, old_path), parse(&new_src, new_path));
+        match (&old_src, &new_src, &old_parse, &new_parse) {
+            (Some(o), Some(n), Some(op), Some(np)) if old.is_some() && new.is_some() => {
+                let (symbols, uo, un) =
+                    SymbolSignals::classify((op, np), (o, n), (old_path, new_path));
+                unmatched_old.extend(uo);
+                unmatched_new.extend(un);
+                pending.push((changed.len(), fh, (old_path, new_path), symbols));
+            }
+            // An added or deleted file: its symbols are move candidates.
+            (Some(o), None, Some(op), _) => {
+                unmatched_old.extend(build_unmatched(op, o, old_path));
+            }
+            (None, Some(n), _, Some(np)) => {
+                unmatched_new.extend(build_unmatched(np, n, new_path));
+            }
+            _ => {}
         }
         if let (Some(p), Some(src)) = (fh.new_path.as_deref(), new_src) {
             sources.insert(p, src);
@@ -1381,6 +1538,25 @@ pub fn analyze(
         });
     }
     report.diff_fingerprint = fingerprint.finalize().to_hex().to_string();
+    let mut moved = moved_spans(&unmatched_old, &unmatched_new);
+    let mut signals = HunkSignals::default();
+    for (i, fh, (old_path, new_path), mut symbols) in pending {
+        let c = &changed[i];
+        let (Some(old), Some(new)) = (&c.old, &c.new) else {
+            continue;
+        };
+        symbols
+            .kept_old
+            .extend(moved.remove(old_path).unwrap_or_default());
+        signals.collect(
+            fh,
+            (old_path, new_path),
+            (old, new),
+            &symbols,
+            c.language,
+            controls,
+        );
+    }
     let HunkSignals { removed, wraps, .. } = signals;
     if removed.is_empty() {
         return Ok(report);
@@ -1417,9 +1593,20 @@ pub fn analyze(
     // hold an idiom (plus call refs when the index is the worktree),
     // tree-sitter confirms and locates it.
     let changed_paths: HashSet<&str> = changed.iter().filter_map(|c| c.new_path).collect();
-    let call_names: Vec<&str> = removed.keys().filter_map(|(_, f)| f.call_name()).collect();
-    let (tree, mut reader) = SurvivorTree::open(db, workspace_root, scope, &call_names)?;
-    for (path, file_id) in tree.files() {
+    let (tree, mut reader) =
+        SurvivorTree::open(db, workspace_root, scope, removed.keys().map(|(_, f)| f))?;
+    let files = tree.files();
+    let started = std::time::Instant::now();
+    for (scanned, &(path, file_id)) in files.iter().enumerate() {
+        if started.elapsed() >= budget.scan_time {
+            report.incomplete.push(format!(
+                "budget: survivor scan stopped after {scanned} of {} files ({} ms); \
+                 survivors and counts in the rest are unknown",
+                files.len(),
+                budget.scan_time.as_millis()
+            ));
+            break;
+        }
         if changed_paths.contains(path) {
             continue;
         }
@@ -1761,7 +1948,14 @@ pub fn run_advisory(
     surface: &str,
     diff_spec: &str,
 ) -> Advisory {
-    match analyze(db, workspace_root, scope, registry, Controls::from_env()) {
+    match analyze(
+        db,
+        workspace_root,
+        scope,
+        registry,
+        Controls::from_env(),
+        Budget::from_env(),
+    ) {
         Ok(report) => {
             let firing_log_error =
                 record_firings(db, workspace_root, &report, surface, diff_spec, scope)

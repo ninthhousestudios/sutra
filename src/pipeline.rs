@@ -385,7 +385,7 @@ fn parse_single_file(
     }
 
     // Parse before deleting old data — on failure, keep the existing index intact.
-    let parse_result = match pool.parse_with(adapter, &contents, &rel_path) {
+    let (parse_result, literals) = match pool.parse_for_index(adapter, &contents, &rel_path) {
         Ok(r) => r,
         Err(e) => {
             warn!(path = %rel_path, error = %e, "parse failed, keeping existing index");
@@ -421,6 +421,7 @@ fn parse_single_file(
         &parent_indices,
         &import_params,
         &ref_params,
+        &literals,
     )?;
     let refs_extracted = ref_params.len() as i64;
 

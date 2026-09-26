@@ -12,7 +12,9 @@ use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
 use sutra::rules::Severity;
 use sutra::tools::review;
-use sutra::tools::sibling_pattern::{self, Controls, IdiomKind, PatternClass, SiblingReport};
+use sutra::tools::sibling_pattern::{
+    self, Budget, Controls, IdiomKind, PatternClass, SiblingReport,
+};
 use sutra::workspace::WorkspaceEntry;
 
 struct Fixture {
@@ -127,6 +129,7 @@ fn analyze_with(fx: &Fixture, diff: &str, controls: Controls) -> SiblingReport {
         &scope,
         &default_registry(),
         controls,
+        Budget::default(),
     )
     .unwrap()
 }
@@ -395,4 +398,107 @@ fn sibling_findings_never_gate_or_score() {
     assert!(risk_with.is_number(), "{risk_with}");
     assert_eq!(risk_with, risk_without);
     assert_eq!(breakdown_with, breakdown_without);
+}
+
+/// An unstaged review reads only the files the index says hold an idiom's
+/// literals (sutra/494). The probe: `lib/c.dart` holds the old list on disk,
+/// but the index was parsed while it didn't, so it is never read.
+#[test]
+fn unstaged_review_narrows_literal_idioms_by_the_index() {
+    let root = repo(&[&[
+        ("lib/a.dart", DART_LIST),
+        ("lib/b.dart", DART_SIBLING),
+        ("lib/c.dart", DART_SIBLING),
+    ]]);
+    let r = root.path();
+    write(r, "lib/a.dart", DART_GROWN);
+    write(r, "lib/c.dart", "bool other() => true;\n");
+    let fx = index(root);
+    git(fx.root.path(), &["checkout", "--", "lib/c.dart"]);
+
+    let report = analyze_diff(&fx, "unstaged");
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    let sites: Vec<(String, usize)> = survivor_sites(&report)
+        .into_iter()
+        .map(|(f, l, _)| (f, l))
+        .collect();
+    assert_eq!(sites, vec![("lib/b.dart".to_string(), 2)]);
+}
+
+/// A survivor scan that runs out of budget says so, and never reads as clean.
+#[test]
+fn exhausted_budget_is_incomplete_not_clean() {
+    let fx = fixture(
+        &[
+            ("src/lib.rs", "pub mod a;\npub mod b;\n"),
+            ("src/a.rs", RUST_SWALLOW),
+            ("src/b.rs", RUST_SIBLING),
+        ],
+        &[("src/a.rs", RUST_TYPED)],
+    );
+    let scope = review::resolve_diff_entries(fx.root.path(), "HEAD").unwrap();
+    let report = sibling_pattern::analyze(
+        &fx.db,
+        fx.root.path(),
+        &scope,
+        &default_registry(),
+        Controls::default(),
+        Budget {
+            scan_time: std::time::Duration::ZERO,
+        },
+    )
+    .unwrap();
+    assert!(
+        report.incomplete.iter().any(|i| i.starts_with("budget:")),
+        "{:?}",
+        report.incomplete
+    );
+}
+
+/// A symbol moved whole to another file is not a removal site, even when the
+/// same diff rewrites the idiom elsewhere (classify_symbols + resolve_renames).
+#[test]
+fn moved_symbol_is_not_a_removal_site() {
+    let fx = fixture(
+        &[
+            (
+                "src/lib.rs",
+                "pub mod a;\npub mod b;\npub mod c;\npub mod d;\n",
+            ),
+            ("src/a.rs", RUST_SWALLOW),
+            ("src/b.rs", RUST_SIBLING),
+            ("src/c.rs", "pub fn other() {}\n"),
+            (
+                "src/d.rs",
+                "pub fn load_notes(raw: &str) -> Vec<String> {\n    serde_json::from_str(raw).unwrap_or_default()\n}\n",
+            ),
+        ],
+        &[
+            ("src/a.rs", "pub fn unrelated() {}\n"),
+            (
+                "src/c.rs",
+                &format!("pub fn other() {{}}\n\n{RUST_SWALLOW}"),
+            ),
+            (
+                "src/d.rs",
+                "pub fn load_notes(raw: &str) -> Result<Vec<String>, serde_json::Error> {\n    serde_json::from_str(raw)\n}\n",
+            ),
+        ],
+    );
+    let report = analyze(&fx, Controls::default());
+    let chain = report
+        .findings
+        .iter()
+        .find(|f| f.idioms.iter().any(|i| i.kind == IdiomKind::Chain))
+        .expect("the rewrite in d.rs is reported");
+    assert_eq!(chain.removed_at, vec!["src/d.rs:2".to_string()]);
+    assert_eq!(
+        survivor_sites(&report)
+            .into_iter()
+            .filter(|(f, _, _)| f == "src/b.rs")
+            .count(),
+        1,
+        "{:#?}",
+        report.findings
+    );
 }

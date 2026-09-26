@@ -150,7 +150,9 @@ fn parent_qualified<'a>(qualified_name: &'a str, short_name: &str) -> Option<&'a
         .and_then(|prefix| prefix.strip_suffix("::"))
 }
 
-fn build_unmatched(parse: &ParseResult, source: &str, file: &str) -> Vec<UnmatchedSymbol> {
+/// Every symbol of one side of a file as a rename/move candidate: the side of
+/// a file the diff added or deleted, which `classify_symbols` never sees.
+pub fn build_unmatched(parse: &ParseResult, source: &str, file: &str) -> Vec<UnmatchedSymbol> {
     let flat = flatten_symbols(&parse.symbols);
     flat.iter()
         .map(|sym| UnmatchedSymbol::new(SymbolSpan::from(*sym), source, file))

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use sutra::db::Db;
 use sutra::parser::adapter::default_registry;
 use sutra::tools::review;
-use sutra::tools::sibling_pattern::{self, Controls, SiblingReport};
+use sutra::tools::sibling_pattern::{self, Budget, Controls, PatternClass, SiblingReport};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Repo {
@@ -59,9 +59,15 @@ fn replay(repo: Repo, sha: &str) -> Option<SiblingReport> {
     let db_dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("backtest", db_dir.path()).unwrap();
     let scope = review::resolve_diff_entries(&root, sha).unwrap();
-    let report =
-        sibling_pattern::analyze(&db, &root, &scope, &default_registry(), Controls::default())
-            .unwrap();
+    let report = sibling_pattern::analyze(
+        &db,
+        &root,
+        &scope,
+        &default_registry(),
+        Controls::default(),
+        Budget::default(),
+    )
+    .unwrap();
     assert!(
         report.incomplete.is_empty(),
         "{sha}: {:?}",
@@ -73,26 +79,38 @@ fn replay(repo: Repo, sha: &str) -> Option<SiblingReport> {
 /// `(file, line, enclosing symbol)`.
 type Site = (&'static str, usize, &'static str);
 
-fn has_survivor(report: &SiblingReport, file: &str, line: usize, symbol: &str) -> bool {
-    report.findings.iter().any(|f| {
-        f.survivors.iter().any(|s| {
-            s.file == file
-                && s.line == line
-                && s.symbol
-                    .as_deref()
-                    .is_some_and(|n| n.rsplit("::").next() == Some(symbol))
+/// The class of the finding that lists the survivor, if one does.
+fn survivor_class(
+    report: &SiblingReport,
+    file: &str,
+    line: usize,
+    symbol: &str,
+) -> Option<PatternClass> {
+    report
+        .findings
+        .iter()
+        .find(|f| {
+            f.survivors.iter().any(|s| {
+                s.file == file
+                    && s.line == line
+                    && s.symbol
+                        .as_deref()
+                        .is_some_and(|n| n.rsplit("::").next() == Some(symbol))
+            })
         })
-    })
+        .map(|f| f.class)
 }
 
 /// The first fix of each PAR pair flags the site of the later bug, and the
 /// sites that later needed their own fixes.
 #[test]
 fn back_test_flags_each_known_site() {
-    let cases: &[(Repo, &str, &[Site])] = &[
+    use PatternClass::{Rewritten, Wrapped};
+    let cases: &[(Repo, &str, PatternClass, &[Site])] = &[
         (
             Repo::Sutra,
             "91fedc7", // sutra/280 → 283
+            Rewritten,
             &[
                 ("src/guard.rs", 407, "language_from_path"),
                 ("src/tools/symbol_diff.rs", 539, "language_for_path"), // sutra/261
@@ -101,11 +119,13 @@ fn back_test_flags_each_known_site() {
         (
             Repo::Sutra,
             "af68577", // sutra/438 → 441
+            Wrapped,
             &[("src/tools/trend.rs", 589, "aggregate_categories")],
         ),
         (
             Repo::Sutra,
             "d70bf20", // sutra/308 → 459
+            Wrapped,
             &[
                 ("src/guard.rs", 765, "check_proposed_patterns"),
                 (
@@ -119,17 +139,19 @@ fn back_test_flags_each_known_site() {
         (
             Repo::Yojana,
             "0b3ff34", // yojana/42 → 47
+            Rewritten,
             &[("src/tools/task.rs", 208, "json_array")],
         ),
     ];
-    for &(repo, sha, sites) in cases {
+    for &(repo, sha, class, sites) in cases {
         let Some(report) = replay(repo, sha) else {
             continue;
         };
         for &(file, line, symbol) in sites {
-            assert!(
-                has_survivor(&report, file, line, symbol),
-                "{sha}: no survivor {file}:{line} ({symbol}) in {:#?}",
+            assert_eq!(
+                survivor_class(&report, file, line, symbol),
+                Some(class),
+                "{sha}: survivor {file}:{line} ({symbol}) in {:#?}",
                 report.findings
             );
         }

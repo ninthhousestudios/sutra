@@ -1341,9 +1341,24 @@ fn test_replace_file_data_atomic() {
         qualifier: None,
     }];
 
+    let lit = |line, text: &str| sutra::parser::literals::ExtractedLiteral {
+        line,
+        text: text.to_string(),
+    };
     let (file_id, sym_count) = db
         .replace_file_data(
-            "test.rs", "rust", "hash1", 5, true, None, None, &symbols, &parents, &imports, &refs,
+            "test.rs",
+            "rust",
+            "hash1",
+            5,
+            true,
+            None,
+            None,
+            &symbols,
+            &parents,
+            &imports,
+            &refs,
+            &[lit(2, "\"dart\"")],
         )
         .unwrap();
     assert!(file_id > 0);
@@ -1352,7 +1367,18 @@ fn test_replace_file_data_atomic() {
     // Replace again with different data — should not duplicate.
     let (file_id2, sym_count2) = db
         .replace_file_data(
-            "test.rs", "rust", "hash2", 10, true, None, None, &symbols, &parents, &imports, &refs,
+            "test.rs",
+            "rust",
+            "hash2",
+            10,
+            true,
+            None,
+            None,
+            &symbols,
+            &parents,
+            &imports,
+            &refs,
+            &[lit(4, "\"rust\"")],
         )
         .unwrap();
     assert!(file_id2 > 0);
@@ -1364,6 +1390,14 @@ fn test_replace_file_data_atomic() {
 
     let all_syms = db.find_symbols_by_file(file_id2).unwrap();
     assert_eq!(all_syms.len(), 1, "no duplicate symbols after re-replace");
+
+    // String literals are extraction data: replaced with the content (sutra/494).
+    let held = db.files_with_literals(&["\"dart\"", "\"rust\""]).unwrap();
+    assert!(
+        held["\"dart\""].is_empty(),
+        "old literals dropped: {held:?}"
+    );
+    assert_eq!(held["\"rust\""], [file_id2].into_iter().collect());
 }
 
 /// sutra/413: a content edit replaces extraction and invalidates derived
@@ -1414,6 +1448,7 @@ fn test_replace_file_data_preserves_history_invalidates_derived() {
             &parents,
             &no_imports,
             &no_refs,
+            &[],
         )
         .unwrap();
 
@@ -1462,6 +1497,7 @@ fn test_replace_file_data_preserves_history_invalidates_derived() {
             &parents,
             &no_imports,
             &no_refs,
+            &[],
         )
         .unwrap();
 

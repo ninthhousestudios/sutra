@@ -249,13 +249,47 @@ of the reviewed side.
 | Prototype | Production |
 |---|---|
 | Regex tokenizer | tree-sitter leaves: comments dropped, string literals whole, lifetimes opaque. The idiom rules run on these tokens unchanged, to stay at the measured behaviour. |
-| Per-hunk token-multiset format check | Kept, plus `symbol_diff::classify_symbols`: a hunk inside a `CosmeticChanged` symbol is skipped. This drops the final-sample fmt residue (yojana 5fc5716). |
-| Wrap signal from a regex callee scan | Parser call refs (the `callee_diff` data): non-generic calls on added lines within 40 lines of the hunk, minus calls on its removed lines. |
-| Re-tokenize every file for DF and survivors | Every file is read on the diff's head side: the worktree for `unstaged`, the index for `staged`, the commit tree for `branch` and explicit ranges (sutra/492). Candidates are narrowed by content (a file must hold the idiom's literals or method name); for `unstaged` only, the index also narrows call idioms to files with a call ref of that name (refs include macro bodies), since the index describes the worktree. tree-sitter confirms and locates. Pre-change DF = unchanged-file count + base-side count in changed files. |
+| Per-hunk token-multiset format check | Kept, plus symbol classification (sutra/494): a hunk is skipped when its removed lines sit inside an old symbol the diff kept. That is one `classify_symbols` marks `CosmeticChanged`, one it matches unchanged by name (shifted within the file), or one `resolve_renames` finds `Moved` to another changed or added file with its body intact. The cosmetic case drops the final-sample fmt residue (yojana 5fc5716). |
+| Move = count unchanged and not re-added in place | Kept as the fallback; exact moves are now dropped before counting, so a moved copy is never a removal site or a hunk towards sweep suppression. |
+| Wrap signal from a regex callee scan | `callee_diff` via `classify_symbols` (sutra/494): the innermost new-side symbols around the hunk's added lines gained a non-generic callee (bare name). Until 494 it was any new non-generic call on an added line within 40 lines of the hunk. |
+| Re-tokenize every file for DF and survivors | Every file is read on the diff's head side: the worktree for `unstaged`, the index for `staged`, the commit tree for `branch` and explicit ranges (sutra/492). For `unstaged`, the index decides which unchanged files are read (sutra/494): call idioms need a call ref of that name (refs include macro bodies); literal and SQL idioms need every literal's key in `string_literals`. The index describes the worktree, so other sides fall back to reading every listed file, narrowed by content (the file must hold the idiom's literals or method name). tree-sitter confirms and locates in both cases. Pre-change DF = unchanged-file count + base-side count in changed files. |
 | `#[cfg(test)]` tail regex | `LanguageAdapter::test_line_ranges` and `is_test_path`, plus the prototype's test/bench/example directories. |
 
 Scope is Rust and Dart, the languages the stoplist covers. Files the check
 can't read or parse are listed as `incomplete`, never read as clean.
+
+### Index and budget (sutra/494)
+
+`string_literals` (migration 0090, ephemeral) holds every Rust and Dart
+string literal of 3 or more characters, written at parse time next to refs.
+The key is the literal normalized (line continuations joined, whitespace
+collapsed) and cut to 40 characters (`parser::literals::PREFIX_CHARS`). So one
+exact-match lookup serves both a list item (at most 40 characters) and an SQL
+idiom's 40-character prefix. Test code is included: the index narrows, and
+tree-sitter confirms. The extractor lives under `src/parser/`, so changing
+it bumps the parser stamp and re-extracts every file. Old rows never
+silently lack literals.
+
+The survivor scan over unchanged files stops at a time budget (5 s,
+`SUTRA_SIBLING_BUDGET_MS`). When it stops, `incomplete` says how far it got,
+and the findings stand as partial. The budget matters most for staged and
+historical reviews, where the index can't narrow. On this machine the 101
+commits in `run.sh` take about 0.5 s each, including adityas/backend.
+
+**The signal change, measured.** Replaying all 101 `run.sh` commits before
+and after sutra/494 (from history, empty index): every `rewritten` finding
+and both back-test wraps (af68577 argfld, d70bf20 sql) are unchanged. The
+back-test now asserts each known site's class. Three `wrapped` findings
+dropped:
+
+| Commit | Item | Label | Why it dropped |
+|---|---|---|---|
+| backend b46afde | origin set | noise | no new callee in the enclosing symbol |
+| yojana 513bb17 | `{"Status","Title"}` table headers | noise | same |
+| yojana 4b7f815 | `{"AFK","HITL"}` → `db.rs:493` | relevant | a top-level `const` list replaced by enums. The old wrap came from unrelated new calls within 40 lines, not from old code kept in a new branch. |
+
+Tuning goes from 5 items on 4 commits to 4 on 3. Held-out goes from 5 on 4 to
+3 on 2. Final is unchanged at 1 on 1.
 
 ### The three new noise controls, measured
 

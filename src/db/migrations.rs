@@ -541,6 +541,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0089_mechanism_firings.sql"),
         false,
     ),
+    // String literal occurrences for the sibling-pattern survivor search
+    // (sutra/494). ephemeral_only: extraction data, recreated by reindex.
+    (
+        "0090_string_literals",
+        include_str!("../../migrations/0090_string_literals.sql"),
+        true,
+    ),
 ];
 
 impl Db {
