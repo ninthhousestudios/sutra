@@ -10,6 +10,7 @@ use sutra::config::Config;
 use sutra::db::Db;
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
+use sutra::rules::Severity;
 use sutra::tools::review;
 use sutra::tools::sibling_pattern::{self, Controls, IdiomKind, PatternClass, SiblingReport};
 use sutra::workspace::WorkspaceEntry;
@@ -50,9 +51,8 @@ const DART_GROWN: &str = "const kinds = ['draft', 'final', 'archived'];\n\nbool 
 const DART_SIBLING: &str =
     "bool editable(String k) {\n  return ['draft', 'final'].contains(k);\n}\n";
 
-/// Seed commit with `before` files, second commit applying `after`, index
-/// parsed at the second commit.
-fn fixture(before: &[(&str, &str)], after: &[(&str, &str)]) -> Fixture {
+/// A repo with one commit per entry of `commits`, each writing its files.
+fn repo(commits: &[&[(&str, &str)]]) -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     let r = root.path();
     write(
@@ -61,20 +61,22 @@ fn fixture(before: &[(&str, &str)], after: &[(&str, &str)]) -> Fixture {
         "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
     );
     write(r, "pubspec.yaml", "name: demo\n");
-    for (p, c) in before {
-        write(r, p, c);
-    }
     git(r, &["init", "-q"]);
     git(r, &["config", "user.email", "test@example.com"]);
     git(r, &["config", "user.name", "Test"]);
-    git(r, &["add", "-A"]);
-    git(r, &["commit", "-q", "--no-verify", "-m", "seed"]);
-    for (p, c) in after {
-        write(r, p, c);
+    for (i, files) in commits.iter().enumerate() {
+        for (p, c) in *files {
+            write(r, p, c);
+        }
+        git(r, &["add", "-A"]);
+        git(r, &["commit", "-q", "--no-verify", "-m", &format!("c{i}")]);
     }
-    git(r, &["add", "-A"]);
-    git(r, &["commit", "-q", "--no-verify", "-m", "rewrite"]);
+    root
+}
 
+/// Parse the worktree of `root` into a fresh index.
+fn index(root: tempfile::TempDir) -> Fixture {
+    let r = root.path();
     let db_dir = tempfile::tempdir().unwrap();
     let ws = WorkspaceEntry {
         id: "sibling".to_string(),
@@ -107,8 +109,18 @@ fn fixture(before: &[(&str, &str)], after: &[(&str, &str)]) -> Fixture {
     }
 }
 
-fn analyze(fx: &Fixture, controls: Controls) -> SiblingReport {
-    let scope = review::resolve_diff_entries(fx.root.path(), "HEAD").unwrap();
+/// Seed commit with `before` files, second commit applying `after`, index
+/// parsed at the second commit.
+fn fixture(before: &[(&str, &str)], after: &[(&str, &str)]) -> Fixture {
+    index(repo(&[before, after]))
+}
+
+fn analyze_diff(fx: &Fixture, diff: &str) -> SiblingReport {
+    analyze_with(fx, diff, Controls::default())
+}
+
+fn analyze_with(fx: &Fixture, diff: &str, controls: Controls) -> SiblingReport {
+    let scope = review::resolve_diff_entries(fx.root.path(), diff).unwrap();
     sibling_pattern::analyze(
         &fx.db,
         fx.root.path(),
@@ -117,6 +129,26 @@ fn analyze(fx: &Fixture, controls: Controls) -> SiblingReport {
         controls,
     )
     .unwrap()
+}
+
+fn survivor_sites(report: &SiblingReport) -> Vec<(String, usize, Option<String>)> {
+    report
+        .findings
+        .iter()
+        .flat_map(|f| &f.survivors)
+        .map(|s| {
+            let symbol = s
+                .symbol
+                .as_deref()
+                .and_then(|n| n.rsplit("::").next())
+                .map(str::to_string);
+            (s.file.to_string(), s.line, symbol)
+        })
+        .collect()
+}
+
+fn analyze(fx: &Fixture, controls: Controls) -> SiblingReport {
+    analyze_with(fx, "HEAD", controls)
 }
 
 #[test]
@@ -235,4 +267,132 @@ fn dart_grown_list_is_rewritten_only_with_the_control_on() {
         ..Controls::default()
     };
     assert!(analyze(&fx, off).findings.is_empty());
+}
+
+const SIBLING_SITE: (&str, usize, &str) = ("src/b.rs", 2, "load_tags");
+
+fn expected_sibling() -> Vec<(String, usize, Option<String>)> {
+    let (file, line, symbol) = SIBLING_SITE;
+    vec![(file.to_string(), line, Some(symbol.to_string()))]
+}
+
+/// A staged review reads the index for every file, not only the ones the diff
+/// touched: an unstaged fix to the sibling doesn't hide it, and the index
+/// (parsed from the worktree) doesn't decide what survives (sutra/492).
+#[test]
+fn staged_review_ignores_unstaged_edits_elsewhere() {
+    let root = repo(&[&[
+        ("src/lib.rs", "pub mod a;\npub mod b;\n"),
+        ("src/a.rs", RUST_SWALLOW),
+        ("src/b.rs", RUST_SIBLING),
+    ]]);
+    let r = root.path();
+    write(r, "src/a.rs", RUST_TYPED);
+    git(r, &["add", "src/a.rs"]);
+    // Unstaged: the sibling fixed, and shifted, in the worktree only.
+    write(
+        r,
+        "src/b.rs",
+        "// fixed\n\npub fn load_tags(raw: &str) -> Result<Vec<String>, serde_json::Error> {\n    serde_json::from_str(raw)\n}\n",
+    );
+    let fx = index(root);
+
+    let report = analyze_diff(&fx, "staged");
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(survivor_sites(&report), expected_sibling());
+}
+
+/// Reviewing an old commit reads that commit's tree: a survivor fixed since is
+/// still listed (with its symbol as of then), one added since is not.
+#[test]
+fn historical_review_reads_the_commit_without_checking_it_out() {
+    let root = repo(&[
+        &[
+            ("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\n"),
+            ("src/a.rs", RUST_SWALLOW),
+            ("src/b.rs", RUST_SIBLING),
+            ("src/c.rs", "pub fn other() {}\n"),
+        ],
+        &[("src/a.rs", RUST_TYPED)],
+        &[
+            ("src/b.rs", "pub fn renamed() {}\n"),
+            (
+                "src/c.rs",
+                "pub fn load_notes(raw: &str) -> Vec<String> {\n    serde_json::from_str(raw).unwrap_or_default()\n}\n",
+            ),
+        ],
+    ]);
+    let fx = index(root);
+
+    let report = analyze_diff(&fx, "HEAD~1");
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(survivor_sites(&report), expected_sibling());
+}
+
+/// Sibling findings are advisory: with or without one, `sutra check` gates the
+/// same and `sutra_review` scores the same risk.
+#[test]
+fn sibling_findings_never_gate_or_score() {
+    let base = [
+        ("src/lib.rs", "pub mod a;\npub mod b;\n"),
+        ("src/a.rs", RUST_SWALLOW),
+    ];
+    let with = fixture(
+        &[base[0], base[1], ("src/b.rs", RUST_SIBLING)],
+        &[("src/a.rs", RUST_TYPED)],
+    );
+    let without = fixture(
+        &[
+            base[0],
+            base[1],
+            (
+                "src/b.rs",
+                "pub fn load_tags(raw: &str) -> Vec<String> {\n    raw.lines().map(str::to_string).collect()\n}\n",
+            ),
+        ],
+        &[("src/a.rs", RUST_TYPED)],
+    );
+    let registry = default_registry();
+
+    let gate = |fx: &Fixture| {
+        let report = sutra::tools::check::handle(
+            &fx.db,
+            fx.root.path(),
+            "HEAD",
+            Severity::Advisory,
+            &registry,
+        )
+        .unwrap();
+        let findings = report
+            .sibling_patterns
+            .as_ref()
+            .map_or(0, |a| a.report.findings.len());
+        (report.failed(), report.blocking.len(), findings)
+    };
+    let (failed_with, blocking_with, findings_with) = gate(&with);
+    let (failed_without, blocking_without, findings_without) = gate(&without);
+    assert_eq!((findings_with, findings_without), (1, 0));
+    assert!(!failed_with, "a sibling finding must not fail the gate");
+    assert_eq!(
+        (failed_with, blocking_with),
+        (failed_without, blocking_without)
+    );
+
+    let review = |fx: &Fixture| {
+        let out = review::handle(&fx.db, fx.root.path(), Some("HEAD"), None, false).unwrap();
+        let findings = out["sibling_patterns"]["findings"]
+            .as_array()
+            .map_or(0, Vec::len);
+        (
+            out["risk_score"].clone(),
+            out["risk_breakdown"].clone(),
+            findings,
+        )
+    };
+    let (risk_with, breakdown_with, findings_with) = review(&with);
+    let (risk_without, breakdown_without, findings_without) = review(&without);
+    assert_eq!((findings_with, findings_without), (1, 0));
+    assert!(risk_with.is_number(), "{risk_with}");
+    assert_eq!(risk_with, risk_without);
+    assert_eq!(breakdown_with, breakdown_without);
 }

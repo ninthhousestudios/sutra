@@ -9,9 +9,11 @@
 //! `docs/sibling-pattern-backtest.md`. This is a port of the frozen v6
 //! prototype (`experiments/sibling-pattern/proto.py`) with the regex tokenizer
 //! replaced by tree-sitter leaves, move/reformat detection by
-//! [`classify_symbols`], the wrap signal by parser call refs, and the survivor
-//! search narrowed by the index. `experiments/sibling-pattern/run.sh` replays
-//! the back-test and noise samples through this code.
+//! [`classify_symbols`], and the wrap signal by parser call refs. Survivors
+//! are searched in the diff's head-side snapshot, never the worktree unless
+//! that is the reviewed side. `tests/sibling-backtest-test.rs` asserts the
+//! back-test and noise ceiling; `experiments/sibling-pattern/run.sh` prints
+//! them.
 //!
 //! Idioms, extracted from the removed lines of each source hunk:
 //!
@@ -1224,8 +1226,71 @@ impl<'a> Occurrences<'a> {
     }
 }
 
-/// Run the check over a resolved diff. Files the diff touched are read on the
-/// diff's head side; the rest of the tree is the indexed worktree.
+/// The unchanged files of the reviewed snapshot, where survivors are searched.
+enum SurvivorTree {
+    /// The worktree (an unstaged review): the index lists the files and
+    /// narrows call idioms to files with a call ref of that name.
+    Worktree {
+        files: Vec<crate::db::FileRow>,
+        call_files: HashMap<String, HashSet<i64>>,
+    },
+    /// The index (a staged review) or a commit: git lists the files and every
+    /// one is read from that snapshot. The sutra index describes the worktree,
+    /// so it neither lists nor narrows here.
+    Snapshot { paths: Vec<String> },
+}
+
+impl SurvivorTree {
+    /// The file list, plus the reader for a snapshot side (`None` reads the
+    /// worktree).
+    fn open(
+        db: &Db,
+        workspace_root: &Path,
+        scope: &DiffScope,
+        call_names: &[&str],
+    ) -> Result<(Self, Option<git::SnapshotReader>)> {
+        Ok(match scope.head_revision.as_deref() {
+            None => (
+                Self::Worktree {
+                    files: db.all_files()?,
+                    call_files: db.files_with_calls_named(call_names)?,
+                },
+                None,
+            ),
+            Some(rev) => (
+                Self::Snapshot {
+                    paths: git::snapshot_files(workspace_root, rev)?
+                        .into_iter()
+                        .filter(|p| !crate::pipeline::walker_skips(p))
+                        .collect(),
+                },
+                Some(git::SnapshotReader::open(workspace_root, rev)?),
+            ),
+        })
+    }
+
+    /// Each file with its index id, when the index is the file list.
+    fn files(&self) -> Vec<(&str, Option<i64>)> {
+        match self {
+            Self::Worktree { files, .. } => files.iter().map(|f| (&*f.path, Some(f.id))).collect(),
+            Self::Snapshot { paths } => paths.iter().map(|p| (p.as_str(), None)).collect(),
+        }
+    }
+
+    /// Whether the file can hold `feat` as far as the index knows.
+    fn may_hold(&self, file_id: Option<i64>, feat: &Feature) -> bool {
+        match (self, file_id, feat.call_name()) {
+            (Self::Worktree { call_files, .. }, Some(id), Some(name)) => {
+                call_files.get(name).is_some_and(|ids| ids.contains(&id))
+            }
+            _ => true,
+        }
+    }
+}
+
+/// Run the check over a resolved diff. Every file, changed or not, is read on
+/// the diff's head side: the worktree for unstaged, the index for staged, the
+/// commit tree otherwise. Enclosing symbols come from a parse of that side.
 pub fn analyze(
     db: &Db,
     workspace_root: &Path,
@@ -1243,6 +1308,9 @@ pub fn analyze(
     let mut fingerprint = blake3::Hasher::new();
     let mut changed: Vec<Changed<'_>> = Vec::new();
     let mut signals = HunkSignals::default();
+    // Head-side source of every file that may hold a survivor, for naming the
+    // enclosing symbol.
+    let mut sources: HashMap<&str, String> = HashMap::new();
 
     for fh in &file_hunks {
         let Some(path) = fh.new_path.as_deref().or(fh.old_path.as_deref()) else {
@@ -1301,6 +1369,9 @@ pub fn analyze(
                 (Err(e), _) | (_, Err(e)) => report.incomplete.push(format!("{path}: {e}")),
             }
         }
+        if let (Some(p), Some(src)) = (fh.new_path.as_deref(), new_src) {
+            sources.insert(p, src);
+        }
         changed.push(Changed {
             new_path: fh.new_path.as_deref(),
             old,
@@ -1342,15 +1413,13 @@ pub fn analyze(
         }
     }
 
-    // The rest of the tree: the index narrows which files can hold an idiom
-    // (call refs for call idioms, content for literals), tree-sitter confirms
-    // and locates it.
+    // The rest of the tree, on the same side. Needles narrow which files can
+    // hold an idiom (plus call refs when the index is the worktree),
+    // tree-sitter confirms and locates it.
     let changed_paths: HashSet<&str> = changed.iter().filter_map(|c| c.new_path).collect();
     let call_names: Vec<&str> = removed.keys().filter_map(|(_, f)| f.call_name()).collect();
-    let call_files = db.files_with_calls_named(&call_names)?;
-    let files = db.all_files()?;
-    for file in &files {
-        let path: &str = &file.path;
+    let (tree, mut reader) = SurvivorTree::open(db, workspace_root, scope, &call_names)?;
+    for (path, file_id) in tree.files() {
         if changed_paths.contains(path) {
             continue;
         }
@@ -1361,20 +1430,20 @@ pub fn analyze(
             continue;
         }
         let lang = language_key(adapter);
-        let may_hold = |f: &Feature| {
-            f.call_name()
-                .is_none_or(|n| call_files.get(n).is_some_and(|ids| ids.contains(&file.id)))
-        };
         let wanted: Vec<&Key> = removed
             .keys()
-            .filter(|(l, f)| *l == lang && may_hold(f))
+            .filter(|(l, f)| *l == lang && tree.may_hold(file_id, f))
             .collect();
         if wanted.is_empty() {
             continue;
         }
-        let source = match git::file_content_on_side(workspace_root, None, path) {
+        let read = match reader.as_mut() {
+            Some(r) => r.read(path),
+            None => git::file_content_on_side(workspace_root, None, path),
+        };
+        let source = match read {
             Ok(Some(s)) => s,
-            Ok(None) => continue, // indexed but deleted since: nothing survives there
+            Ok(None) => continue, // listed but gone on this side: nothing survives there
             Err(e) => {
                 report.incomplete.push(format!("{path}: {e}"));
                 continue;
@@ -1394,6 +1463,7 @@ pub fn analyze(
                 continue;
             }
         };
+        let mut survived = false;
         for (key, lines) in tree_occurrences(&toks.tokens, tree_scope, &removed, lang) {
             if !wanted.contains(key) {
                 continue;
@@ -1401,7 +1471,11 @@ pub fn analyze(
             *occ.unchanged.entry(key).or_default() += lines.len();
             for l in lines {
                 occ.survive(key, (path, l), &toks.lines);
+                survived = true;
             }
+        }
+        if survived {
+            sources.insert(path, source);
         }
     }
 
@@ -1419,7 +1493,13 @@ pub fn analyze(
             survivors.push(Survivor {
                 file: site.0.to_string(),
                 line: site.1,
-                symbol: symbols.enclosing(db, site.0, site.1)?,
+                symbol: symbols.enclosing(
+                    &mut parsers,
+                    registry,
+                    &sources,
+                    site,
+                    &mut report.incomplete,
+                ),
                 snippet: occ.snippets.remove(&site).unwrap_or_default(),
             });
         }
@@ -1597,32 +1677,44 @@ fn group_by_survivors(findings: Vec<Grouped<'_>>) -> Vec<Grouped<'_>> {
     out
 }
 
-/// Enclosing symbols from the index, one symbol list per file.
+/// Enclosing symbols from a parse of the reviewed side, one span list per
+/// file: `(start_line, end_line, qualified_name)`.
 #[derive(Default)]
 struct SymbolLookup<'a> {
-    files: HashMap<&'a str, Vec<crate::db::SymbolRow>>,
+    files: HashMap<&'a str, Vec<(usize, usize, String)>>,
 }
 
 impl<'a> SymbolLookup<'a> {
-    fn enclosing(&mut self, db: &Db, path: &'a str, line: usize) -> Result<Option<String>> {
-        let syms = match self.files.entry(path) {
-            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => {
-                let rows = match db.file_by_path(path)? {
-                    Some(file) => db.find_symbols_by_file(file.id)?,
-                    None => Vec::new(), // not indexed: no symbol to name
-                };
-                e.insert(rows)
+    fn enclosing(
+        &mut self,
+        parsers: &mut Parsers,
+        registry: &LanguageRegistry,
+        sources: &HashMap<&str, String>,
+        (path, line): Site<'a>,
+        incomplete: &mut Vec<String>,
+    ) -> Option<String> {
+        let spans = self.files.entry(path).or_insert_with(|| {
+            let (Some(adapter), Some(source)) =
+                (adapter_for_path(registry, path), sources.get(path))
+            else {
+                return Vec::new();
+            };
+            match parsers.parse(adapter, source, path) {
+                Ok(parse) => flatten_symbols(&parse.symbols)
+                    .into_iter()
+                    .map(|s| (s.start_line, s.end_line, s.qualified_name.to_string()))
+                    .collect(),
+                Err(e) => {
+                    incomplete.push(format!("{path}: {e}"));
+                    Vec::new()
+                }
             }
-        };
-        let Ok(line) = i64::try_from(line) else {
-            return Ok(None);
-        };
-        Ok(syms
+        });
+        spans
             .iter()
-            .filter(|s| s.start_line <= line && line <= s.end_line)
-            .min_by_key(|s| s.end_line - s.start_line)
-            .map(|s| s.qualified_name.to_string()))
+            .filter(|(start, end, _)| *start <= line && line <= *end)
+            .min_by_key(|(start, end, _)| end - start)
+            .map(|(_, _, name)| name.to_string())
     }
 }
 

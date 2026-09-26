@@ -655,6 +655,134 @@ pub fn file_content_on_side(
     }
 }
 
+/// The regular files of a snapshot: `""` lists the index (stage 0), any other
+/// revision its commit tree. Gitlinks, symlinks and conflicted entries are
+/// skipped.
+pub fn snapshot_files(workspace_root: &Path, revision: &str) -> Result<Vec<String>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(workspace_root)
+        .args(["-c", "core.quotePath=false"]);
+    if revision.is_empty() {
+        cmd.args(["ls-files", "-s", "-z"]);
+    } else {
+        cmd.args(["ls-tree", "-r", "-z", "--end-of-options", revision]);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git ls-files/ls-tree failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!(
+            "git ls-files/ls-tree: {stderr}"
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut paths = Vec::new();
+    for entry in stdout.split('\0').filter(|e| !e.is_empty()) {
+        let Some((meta, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        // ls-files: `<mode> <oid> <stage>`; ls-tree: `<mode> <type> <oid>`.
+        let fields: Vec<&str> = meta.split(' ').collect();
+        let regular = matches!(fields.first(), Some(&"100644" | &"100755"));
+        let current = if revision.is_empty() {
+            fields.get(2) == Some(&"0")
+        } else {
+            fields.get(1) == Some(&"blob")
+        };
+        if regular && current {
+            paths.push(path.to_string());
+        }
+    }
+    Ok(paths)
+}
+
+/// Reads many files from one snapshot through a single `git cat-file --batch`
+/// process: `""` is the index, anything else a revision.
+pub struct SnapshotReader {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+    revision: String,
+}
+
+impl SnapshotReader {
+    pub fn open(workspace_root: &Path, revision: &str) -> Result<Self> {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(workspace_root)
+            .args(["cat-file", "--batch"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| SutraError::Internal(format!("git cat-file failed: {e}")))?;
+        let stdin = child.stdin.take();
+        let stdout = child
+            .stdout
+            .take()
+            .map(std::io::BufReader::new)
+            .ok_or_else(|| SutraError::Internal("git cat-file: no stdout".into()))?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout,
+            revision: revision.to_string(),
+        })
+    }
+
+    /// Content of `path` in the snapshot; `Ok(None)` when it is not a file
+    /// there.
+    pub fn read(&mut self, path: &str) -> Result<Option<String>> {
+        use std::io::{BufRead, Read, Write};
+
+        let err = |what: &str, e: &dyn std::fmt::Display| {
+            SutraError::Internal(format!("git cat-file {what} {path}: {e}"))
+        };
+        if path.contains('\n') {
+            return Err(err("read", &"path holds a newline"));
+        }
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| err("write", &"stdin closed"))?;
+        writeln!(stdin, "{}:{path}", self.revision)
+            .and_then(|()| stdin.flush())
+            .map_err(|e| err("write", &e))?;
+        let mut header = String::new();
+        self.stdout
+            .read_line(&mut header)
+            .map_err(|e| err("read", &e))?;
+        // `<oid> <type> <size>`, or `<spec> missing` / `<spec> ambiguous`.
+        let fields: Vec<&str> = header.trim_end().rsplitn(3, ' ').collect();
+        let (Some(size), Some(kind)) = (
+            fields.first().and_then(|s| s.parse::<usize>().ok()),
+            fields.get(1),
+        ) else {
+            return Ok(None);
+        };
+        let mut body = vec![0u8; size + 1]; // content plus its trailing newline
+        self.stdout
+            .read_exact(&mut body)
+            .map_err(|e| err("read", &e))?;
+        body.truncate(size);
+        if *kind != "blob" {
+            return Ok(None);
+        }
+        String::from_utf8(body)
+            .map(Some)
+            .map_err(|e| err("read", &format!("non-UTF8 content: {e}")))
+    }
+}
+
+impl Drop for SnapshotReader {
+    fn drop(&mut self) {
+        drop(self.stdin.take()); // EOF ends the batch
+        let _ = self.child.wait();
+    }
+}
+
 pub fn git_file_content_at(
     workspace_root: &Path,
     revision: &str,

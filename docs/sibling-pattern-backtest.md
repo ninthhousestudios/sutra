@@ -234,7 +234,8 @@ firing log (`mechanism_firings`, see [sutra-purpose.md](sutra-purpose.md)
 rule 9). `sutra firings` reads it back with a per-site status.
 
 Output: pattern-centric, one finding per idiom (or per group of idioms with
-identical survivors). Each survivor carries its enclosing symbol from the index.
+identical survivors). Each survivor carries its enclosing symbol, from a parse
+of the reviewed side.
 
 ```json
 {"idioms": [{"kind": "chain", "idiom": "serde_json::from_str.unwrap_or_default"}],
@@ -250,7 +251,7 @@ identical survivors). Each survivor carries its enclosing symbol from the index.
 | Regex tokenizer | tree-sitter leaves: comments dropped, string literals whole, lifetimes opaque. The idiom rules run on these tokens unchanged, to stay at the measured behaviour. |
 | Per-hunk token-multiset format check | Kept, plus `symbol_diff::classify_symbols`: a hunk inside a `CosmeticChanged` symbol is skipped. This drops the final-sample fmt residue (yojana 5fc5716). |
 | Wrap signal from a regex callee scan | Parser call refs (the `callee_diff` data): non-generic calls on added lines within 40 lines of the hunk, minus calls on its removed lines. |
-| Re-tokenize every file for DF and survivors | The index narrows candidates: call idioms go to files with a call ref of that name (refs include macro bodies), literal idioms to files whose content holds the literal. tree-sitter confirms and locates. Pre-change DF = unchanged-file count + base-side count in changed files. |
+| Re-tokenize every file for DF and survivors | Every file is read on the diff's head side: the worktree for `unstaged`, the index for `staged`, the commit tree for `branch` and explicit ranges (sutra/492). Candidates are narrowed by content (a file must hold the idiom's literals or method name); for `unstaged` only, the index also narrows call idioms to files with a call ref of that name (refs include macro bodies), since the index describes the worktree. tree-sitter confirms and locates. Pre-change DF = unchanged-file count + base-side count in changed files. |
 | `#[cfg(test)]` tail regex | `LanguageAdapter::test_line_ranges` and `is_test_path`, plus the prototype's test/bench/example directories. |
 
 Scope is Rust and Dart, the languages the stoplist covers. Files the check
@@ -270,6 +271,14 @@ runs the frozen prototype).
 | `grown_litset`: a literal list whose added side is a strict superset of its removed side | **Recovers yojana dd8dc0a** (`tools/project.rs:9 VALID_STATUSES` missing `production`: real, live). The first cut marked every *pair* of the old list as rewritten, and it flagged 15 unrelated status lists on 1138076. Shipped form: a survivor is a literal list holding every old item and none of the added ones. That drops 1138076 to silent and keeps dd8dc0a at 1 survivor. |
 
 ### Results vs the prototype
+
+Until sutra/492 the survivor search read unchanged files from the worktree and
+narrowed them with the current index, so reviewing a past commit saw today's
+tree. `replay.py` masked that by checking each commit out first. The numbers
+below now also hold without a checkout: `tests/sibling-backtest-test.rs`
+replays the back-test, the additive pairs and the seed-99 sample straight from
+history, with an empty index, and asserts the known sites and a ceiling of 3
+items on the final sample (it reports 1).
 
 | Sample | v6 prototype | Production |
 |---|---|---|

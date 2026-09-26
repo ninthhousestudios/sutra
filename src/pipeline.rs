@@ -244,6 +244,16 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
     ".claude",
 ];
 
+/// True when [`workspace_walker`] would never reach `rel_path`: a hidden
+/// segment or a [`SKIP_DIRS`] directory on the way. For file lists that come
+/// from git rather than the walker.
+pub(crate) fn walker_skips(rel_path: &str) -> bool {
+    let mut segments = rel_path.split('/');
+    let file = segments.next_back();
+    file.is_some_and(|f| f.starts_with('.'))
+        || segments.any(|s| s.starts_with('.') || SKIP_DIRS.contains(&s))
+}
+
 /// A workspace directory walker that respects `.gitignore` (plus `.ignore`,
 /// parent gitignores, `.git/info/exclude`, and the global gitignore), skips
 /// hidden entries, and hard-skips build-output dirs in [`SKIP_DIRS`].
