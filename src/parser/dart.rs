@@ -911,6 +911,34 @@ fn first_identifier_child(node: Node) -> Option<Node> {
         .find(|c| c.kind() == "identifier")
 }
 
+/// tree-sitter-dart 0.2 parses an arrow closure whose body is a call,
+/// `() => f(a)`, as the closure called with `(a)`: `call_expression(function:
+/// function_expression(body: f), arguments: (a))`. The bare body (`f`, or the
+/// property of `obj.f`) is then the callee of that call. An explicitly invoked
+/// closure, `(() => f)(a)`, parses with a parenthesized function and is not
+/// matched (sutra/483).
+fn is_arrow_body_callee(node: Node, parent: Node) -> bool {
+    let body_expr = match parent.kind() {
+        "function_expression_body" => node,
+        "member_expression" if is_property_child(node, parent) => parent,
+        _ => return false,
+    };
+    let Some(closure) = body_expr
+        .parent()
+        .filter(|b| b.kind() == "function_expression_body")
+        .and_then(|b| b.parent())
+        .filter(|c| c.kind() == "function_expression")
+    else {
+        return false;
+    };
+    closure.parent().is_some_and(|call| {
+        call.kind() == "call_expression"
+            && call
+                .child_by_field_name("function")
+                .is_some_and(|f| f.id() == closure.id())
+    })
+}
+
 fn classify_ref_context(node: Node) -> RefContextKind {
     let Some(parent) = node.parent() else {
         return RefContextKind::Other;
@@ -925,7 +953,7 @@ fn classify_ref_context(node: Node) -> RefContextKind {
     }
 
     // Call: direct callee of call_expression
-    if pk == "call_expression" {
+    if pk == "call_expression" || is_arrow_body_callee(node, parent) {
         return RefContextKind::Call;
     }
 

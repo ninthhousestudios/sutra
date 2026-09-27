@@ -59,6 +59,29 @@ fn test_dart_symbols_without_specific_attrs_store_empty_attrs() {
 }
 
 #[test]
+fn test_dart_call_as_arrow_closure_body_is_a_call() {
+    // tree-sitter-dart parses `() => f(a)` as `(() => f)(a)`.
+    let src = r#"
+void g() {
+  h(onTap: () => toRows(results, fmt));
+  h(onTap: () => svc.load(x));
+  h(onTap: () => c ? nested(r) : []);
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/g.dart").unwrap();
+    let kind = |name: &str| {
+        result
+            .references
+            .iter()
+            .find(|r| r.name == name)
+            .map(|r| r.context_kind)
+    };
+    assert_eq!(kind("toRows"), Some(RefContextKind::Call));
+    assert_eq!(kind("load"), Some(RefContextKind::Call));
+    assert_eq!(kind("nested"), Some(RefContextKind::Call));
+}
+
+#[test]
 fn test_parse_dart_imports() {
     let src = r#"
 import 'package:flutter/material.dart';
