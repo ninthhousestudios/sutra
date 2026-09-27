@@ -103,6 +103,16 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Whether the index holds any file of `language`: a workspace indexes
+    /// only its configured languages, and a file of another is out of scope,
+    /// not missing.
+    pub fn indexes_language(&self, language: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        Ok(conn
+            .prepare_cached("SELECT EXISTS (SELECT 1 FROM files WHERE language = ?1)")?
+            .query_row(params![language], |r| r.get(0))?)
+    }
+
     /// Every symbol whose short name is `short_name`.
     pub fn symbols_named(&self, short_name: &str) -> Result<Vec<SymbolSite>> {
         let conn = self.conn.lock();

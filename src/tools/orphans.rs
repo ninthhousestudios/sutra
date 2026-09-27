@@ -205,6 +205,9 @@ pub fn analyze(
         let Some(adapter) = adapter_for(registry, path) else {
             continue;
         };
+        if !db.indexes_language(adapter.language_id())? {
+            continue;
+        }
         if let Some(new_path) = fh.new_path.as_deref()
             && let Some(why) = index_mismatch(db, workspace_root, scope, new_path)
         {
