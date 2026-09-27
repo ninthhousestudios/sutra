@@ -273,11 +273,15 @@ Representative DUP items:
   token-identical bodies.** `_ContextDateFieldState._showInvalid` (method) vs
   `showInvalidEntry` (top-level function, same body minus a `mounted` guard)
   gives embed 0.10 and strip 0.14. The same two methods compared with each
-  other give 1.00. Lexical scores the pair 0.98. Observed, not root-caused. A
-  plausible mechanism is that the root node kind is bound over the whole
-  subtree, so different wrapper kinds (method vs function) give unrelated
-  vectors. This blinds HRR to the commonest Dart extraction shape (a method
-  becomes a free helper).
+  other give 1.00. Lexical scores the pair 0.98. Root-caused in sutra/471:
+  the symbol root's kind (`method_declaration` vs `function_declaration`)
+  was bound over the whole subtree, and Dart nests a method's
+  `function_signature` under an extra `method_signature`. The encoder now
+  skips the root bind and treats `method_signature` as transparent, so
+  identical bodies score ~1.0. This pair still scores embed 0.10 (strip
+  0.51), because the method's leading `if (!mounted) return;` shifts every
+  later statement's position permutation. Without the guard it scores 0.66,
+  and 0.84 with the same parameters too. Insertion brittleness is sutra/503.
 - **embed ignores literals.** Match arms that map variants to strings score
   0.8 against any other such function (lex 0.0). This is why combo averages
   embed with lex instead of taking the max.

@@ -555,6 +555,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0091_firing_events.sql"),
         false,
     ),
+    // HRR encoding changed (sutra/471) — clear vectors so a one-time recompute
+    // replaces them; same reasoning as 0064. Not ephemeral_only: reindex
+    // rebuilds hrr_vectors/hrr_file_hashes empty.
+    (
+        "0092_recompute_hrr_symbol_root",
+        include_str!("../../migrations/0092_recompute_hrr_symbol_root.sql"),
+        false,
+    ),
 ];
 
 impl Db {

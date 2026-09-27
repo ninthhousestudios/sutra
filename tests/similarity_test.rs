@@ -617,3 +617,47 @@ fn hrr_file_hashes_written_atomically_with_vectors() {
         "all hrr_file_hashes should match current files.content_hash"
     );
 }
+
+// sutra/471: in tree-sitter-dart the root node of a method (method_declaration
+// wrapping method_signature) differs in kind and nesting from a top-level
+// function (function_declaration), so an extracted helper with the same body
+// must still score close to the method it came from.
+#[test]
+fn dart_method_and_top_level_function_with_same_body_are_similar() {
+    let f = setup(&[(
+        "lib/a.dart",
+        concat!(
+            "class Foo {\n",
+            "  void showInvalid(int x) {\n",
+            "    if (x > 0) {\n",
+            "      print(x + 1);\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "void showInvalidEntry(int x) {\n",
+            "  if (x > 0) {\n",
+            "    print(x + 1);\n",
+            "  }\n",
+            "}\n",
+        ),
+    )]);
+    let mut f = f;
+    f.ws.languages = vec!["dart".to_string()];
+    parse(&f);
+
+    let id_of = |name: &str| -> i64 {
+        f.db.conn_for_test()
+            .query_row(
+                "SELECT id FROM symbols WHERE short_name = ?1 AND kind IN ('function', 'method')",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("no symbol {name}: {e}"))
+    };
+    let (method, func) = (id_of("showInvalid"), id_of("showInvalidEntry"));
+    let vecs = load_vectors(&f.db);
+    for mode in ["strip", "embed"] {
+        let sim = get_vec(&vecs, method, mode).cosine_similarity(get_vec(&vecs, func, mode));
+        assert!(sim > 0.8, "{mode}: method vs function sim={sim:.4}");
+    }
+}
