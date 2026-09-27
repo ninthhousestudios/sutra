@@ -23,9 +23,7 @@ pub(crate) use constraints::{
 };
 pub use conventions::ConventionRow;
 pub(crate) use graph::file_importers_from_conn;
-pub use similarity::{
-    HrrSymbolRow, PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary,
-};
+pub use similarity::{HrrSymbolRow, PatternFamily, SymbolSummary};
 
 use std::path::Path;
 use std::sync::Arc;

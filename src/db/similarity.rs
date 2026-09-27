@@ -19,21 +19,6 @@ pub struct SymbolSummary {
     pub end_line: i64,
 }
 
-pub struct PatternFamilyMember {
-    pub symbol_id: i64,
-    pub qualified_name: String,
-    pub file_path: String,
-    pub start_line: i64,
-    pub end_line: i64,
-}
-
-pub struct PatternFamilyRow {
-    pub family_id: i64,
-    pub member_count: i64,
-    pub avg_similarity: f64,
-    pub members: Vec<PatternFamilyMember>,
-}
-
 pub struct HrrSymbolRow {
     pub symbol_id: i64,
     pub file_id: i64,
