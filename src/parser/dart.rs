@@ -1196,20 +1196,40 @@ fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeC
 }
 
 /// Walk down import_or_export → library_import → import_specification → uri → string_literal
-/// to extract the raw URI string.
+/// to extract the raw URI string. A configurable import
+/// (`import 'io.dart' if (dart.library.js_interop) 'web.dart'`) yields one
+/// import per URI, all on the directive's line: the alternatives are real
+/// dependencies, and a file reached only as one would otherwise read as
+/// unimported, its symbols as dead (sutra/483).
 fn extract_import_uri(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>) {
     let line = node.start_position().row + 1;
-    find_string_literal(node, src)
-        .into_iter()
-        .for_each(|raw_path| {
-            imports.push(ExtractedImport {
-                raw_path,
-                line,
-                kind: "import",
-                alias: None,
-                is_test: false,
-            })
-        });
+    let mut uris = Vec::new();
+    collect_uris(node, src, &mut uris);
+    if uris.is_empty() {
+        uris = find_string_literal(node, src);
+    }
+    uris.into_iter().for_each(|raw_path| {
+        imports.push(ExtractedImport {
+            raw_path,
+            line,
+            kind: "import",
+            alias: None,
+            is_test: false,
+        })
+    });
+}
+
+/// The string of every `uri` node under `node`. A configuration's `uri_test`
+/// can hold a string too (`if (dart.library.io == 'true')`); it is not a URI.
+fn collect_uris(node: Node, src: &[u8], out: &mut Vec<String>) {
+    if node.kind() == "uri" {
+        out.extend(find_string_literal(node, src));
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_uris(child, src, out);
+    }
 }
 
 fn find_string_literal(node: Node, src: &[u8]) -> Vec<String> {

@@ -74,6 +74,32 @@ import 'dart:async';
 }
 
 #[test]
+fn test_dart_configurable_import_records_every_uri() {
+    let src = r#"
+import 'staging_io.dart'
+    if (dart.library.js_interop) 'staging_web.dart'
+    if (dart.library.io == 'true') 'staging_native.dart' as staging;
+import 'plain.dart';
+"#;
+    let result = parser::parse_file(src, "dart", "lib/boot.dart").unwrap();
+    let uris: Vec<(&str, usize)> = result
+        .imports
+        .iter()
+        .map(|i| (i.raw_path.as_str(), i.line))
+        .collect();
+    assert_eq!(
+        uris,
+        vec![
+            ("staging_io.dart", 2),
+            ("staging_web.dart", 2),
+            ("staging_native.dart", 2),
+            ("plain.dart", 5),
+        ],
+        "every alternative is an import on the directive's line; the `== 'true'` test value is not"
+    );
+}
+
+#[test]
 fn test_dart_test_file_imports_flagged_by_path() {
     let src = r#"
 import 'package:flutter_test/flutter_test.dart';
