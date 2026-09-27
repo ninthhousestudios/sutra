@@ -12,7 +12,6 @@ qualifier where there is one), not from a parse of the parent tree.
 """
 
 import json
-import os
 import subprocess
 import sys
 
@@ -37,6 +36,8 @@ def replay(repo, sha):
         cwd=wt,
         capture_output=True,
         text=True,
+        # Exit 1 means a blocking constraint fired; the JSON is complete either way.
+        check=False,
     )
     report = json.loads(out.stdout)["orphans"]
     items = [

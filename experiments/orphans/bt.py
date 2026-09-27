@@ -25,8 +25,8 @@ SUTRA_BIN picks the binary (default: this repo's target/release/sutra).
 """
 
 import json
-import re
 import os
+import re
 import sqlite3
 import subprocess
 import sys
