@@ -21,6 +21,7 @@ pub mod impact;
 pub mod lessons;
 pub mod lookup;
 pub mod map;
+pub mod orphans;
 pub mod outline;
 pub mod parse;
 pub mod pr_risk;

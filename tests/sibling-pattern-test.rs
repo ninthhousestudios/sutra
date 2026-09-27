@@ -2,46 +2,17 @@
 //! an idiom at one site, the index-backed search finds the sibling that still
 //! has it, and the firing log records it once per review event (sutra/491).
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::AtomicBool;
+mod support;
 
-use sutra::config::Config;
-use sutra::db::Db;
+use std::path::Path;
+
+use support::{Fixture, git, index, repo, write};
 use sutra::parser::adapter::default_registry;
-use sutra::pipeline;
 use sutra::rules::Severity;
 use sutra::tools::review;
 use sutra::tools::sibling_pattern::{
     self, Budget, Controls, IdiomKind, PatternClass, SiblingReport,
 };
-use sutra::workspace::WorkspaceEntry;
-
-struct Fixture {
-    root: tempfile::TempDir,
-    _db_dir: tempfile::TempDir,
-    db: Db,
-}
-
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .expect("git spawn");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn write(root: &Path, rel: &str, content: &str) {
-    let p = root.join(rel);
-    std::fs::create_dir_all(p.parent().expect("fixture paths have a parent")).unwrap();
-    std::fs::write(p, content).unwrap();
-}
 
 const RUST_SWALLOW: &str = "pub fn load_refs(raw: &str) -> Vec<String> {\n    serde_json::from_str(raw).unwrap_or_default()\n}\n";
 const RUST_TYPED: &str = "pub fn load_refs(raw: &str) -> Result<Vec<String>, serde_json::Error> {\n    serde_json::from_str(raw)\n}\n";
@@ -53,68 +24,10 @@ const DART_GROWN: &str = "const kinds = ['draft', 'final', 'archived'];\n\nbool 
 const DART_SIBLING: &str =
     "bool editable(String k) {\n  return ['draft', 'final'].contains(k);\n}\n";
 
-/// A repo with one commit per entry of `commits`, each writing its files.
-fn repo(commits: &[&[(&str, &str)]]) -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
-    let r = root.path();
-    write(
-        r,
-        "Cargo.toml",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
-    );
-    write(r, "pubspec.yaml", "name: demo\n");
-    git(r, &["init", "-q"]);
-    git(r, &["config", "user.email", "test@example.com"]);
-    git(r, &["config", "user.name", "Test"]);
-    for (i, files) in commits.iter().enumerate() {
-        for (p, c) in *files {
-            write(r, p, c);
-        }
-        git(r, &["add", "-A"]);
-        git(r, &["commit", "-q", "--no-verify", "-m", &format!("c{i}")]);
-    }
-    root
-}
-
-/// Parse the worktree of `root` into a fresh index.
-fn index(root: tempfile::TempDir) -> Fixture {
-    let r = root.path();
-    let db_dir = tempfile::tempdir().unwrap();
-    let ws = WorkspaceEntry {
-        id: "sibling".to_string(),
-        root: PathBuf::from(r),
-        languages: vec!["rust".to_string(), "dart".to_string()],
-        frozen: false,
-    };
-    let config = Config {
-        db_dir: db_dir.path().to_path_buf(),
-        workspaces_path: db_dir.path().join("workspaces.toml"),
-        listen_addr: "127.0.0.1:0".to_string(),
-        parse_parallelism: 1,
-        log_level: "warn".to_string(),
-        constraints_idle_timeout_sec: 1800,
-        parse_timeout_ms: 5000,
-    };
-    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
-    pipeline::parse_workspace(
-        &ws,
-        &db,
-        &config,
-        &AtomicBool::new(false),
-        &default_registry(),
-    )
-    .unwrap();
-    Fixture {
-        root,
-        _db_dir: db_dir,
-        db,
-    }
-}
-
 /// Seed commit with `before` files, second commit applying `after`, index
 /// parsed at the second commit.
 fn fixture(before: &[(&str, &str)], after: &[(&str, &str)]) -> Fixture {
-    index(repo(&[before, after]))
+    index(repo(&[before, after]), "sibling")
 }
 
 fn analyze_diff(fx: &Fixture, diff: &str) -> SiblingReport {
@@ -474,7 +387,7 @@ fn staged_review_ignores_unstaged_edits_elsewhere() {
         "src/b.rs",
         "// fixed\n\npub fn load_tags(raw: &str) -> Result<Vec<String>, serde_json::Error> {\n    serde_json::from_str(raw)\n}\n",
     );
-    let fx = index(root);
+    let fx = index(root, "sibling");
 
     let report = analyze_diff(&fx, "staged");
     assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
@@ -501,7 +414,7 @@ fn historical_review_reads_the_commit_without_checking_it_out() {
             ),
         ],
     ]);
-    let fx = index(root);
+    let fx = index(root, "sibling");
 
     let report = analyze_diff(&fx, "HEAD~1");
     assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
@@ -589,7 +502,7 @@ fn unstaged_review_narrows_literal_idioms_by_the_index() {
     let r = root.path();
     write(r, "lib/a.dart", DART_GROWN);
     write(r, "lib/c.dart", "bool other() => true;\n");
-    let fx = index(root);
+    let fx = index(root, "sibling");
     git(fx.root.path(), &["checkout", "--", "lib/c.dart"]);
 
     let report = analyze_diff(&fx, "unstaged");

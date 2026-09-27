@@ -1232,7 +1232,7 @@ fn moved_spans(
 }
 
 /// Both sides of one changed file: `(old, new)` source.
-fn read_sides(
+pub(crate) fn read_sides(
     workspace_root: &Path,
     scope: &DiffScope,
     fh: &git::FileHunks,
@@ -1924,6 +1924,15 @@ pub struct Advisory {
 }
 
 impl Advisory {
+    /// The review event's identity, or why the diff could not be hashed. The
+    /// other mechanisms of the same review record under this event.
+    pub fn patch(&self) -> std::result::Result<&ReviewedPatch, &str> {
+        match &self.error {
+            None => Ok(&self.report.patch),
+            Some(e) => Err(e),
+        }
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         let mut out = serde_json::json!({
             "advisory": true,

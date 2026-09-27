@@ -11,6 +11,7 @@ pub mod entity_changes;
 pub mod firings;
 mod graph;
 mod migrations;
+pub mod orphans;
 mod similarity;
 
 pub(crate) use components::active_components_with_paths_from_conn;
@@ -34,6 +35,21 @@ use rusqlite::{Connection, params};
 use crate::error::{Result, SutraError};
 use crate::lexical_tokenize::tokenize;
 use crate::workspace::{self, WorkspaceEntry};
+
+/// Symbol kinds dead-code analysis reports: `sutra_dead` and the orphans
+/// advisory (sutra/483).
+pub const DEAD_CODE_KINDS: [&str; 10] = [
+    "function",
+    "method",
+    "struct",
+    "enum",
+    "trait",
+    "type_alias",
+    "class",
+    "mixin",
+    "const",
+    "static",
+];
 
 /// The `symbols_fts.lex_tokens` content for one symbol: the shared lexical
 /// tokenizer applied to every searchable field, space-joined. This is the
@@ -1564,7 +1580,8 @@ impl Db {
     ) -> Result<Vec<(String, String, String, i64, Option<String>)>> {
         let conn = self.conn.lock();
         let like_pattern = path_prefix.map(|p| format!("{p}%"));
-        let mut stmt = conn.prepare(
+        let kinds = DEAD_CODE_KINDS.map(|k| format!("'{k}'")).join(",");
+        let mut stmt = conn.prepare(&format!(
             "SELECT s.qualified_name, f.path, s.kind, s.start_line, s.visibility
              FROM symbols s
              JOIN files f ON s.file_id = f.id
@@ -1575,8 +1592,7 @@ impl Db {
                                WHERE twin.file_id = s.file_id
                                  AND twin.qualified_name = s.qualified_name
                                  AND twin.id != s.id)
-               AND s.kind IN ('function','method','struct','enum','trait',
-                              'type_alias','class','mixin','const','static')
+               AND s.kind IN ({kinds})
                AND s.short_name != 'main'
                AND f.path NOT LIKE '%/tests/%'
                AND (s.flags & 15) = 0
@@ -1591,7 +1607,7 @@ impl Db {
                AND (?1 = 1 OR s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))
                AND (?2 IS NULL OR f.path LIKE ?2)
              ORDER BY f.path, s.start_line",
-        )?;
+        ))?;
         let rows: rusqlite::Result<Vec<_>> = stmt
             .query_map(params![include_pub as i32, like_pattern], |row| {
                 Ok((

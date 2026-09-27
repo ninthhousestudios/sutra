@@ -124,6 +124,15 @@ pub fn handle(
         mode,
     );
 
+    let orphans = crate::tools::orphans::run_advisory(
+        db,
+        workspace_root,
+        &scope,
+        &registry,
+        ("review", mode),
+        sibling_patterns.patch(),
+    );
+
     let firing_log_error = record_constraint_firings(
         db,
         workspace_root,
@@ -179,6 +188,7 @@ pub fn handle(
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
         }
         obj.insert("sibling_patterns".into(), sibling_patterns.to_json());
+        obj.insert("orphans".into(), orphans.to_json());
         if let Some(e) = firing_log_error {
             obj.insert("constraint_firing_log_error".into(), json!(e));
         }
@@ -478,11 +488,14 @@ pub fn record_constraint_firings(
         diff_spec,
         content,
     } = at;
-    if let Some(e) = &sibling.error {
-        return Some(format!(
-            "no review event: the diff could not be hashed: {e}"
-        ));
-    }
+    let patch = match sibling.patch() {
+        Ok(patch) => patch,
+        Err(e) => {
+            return Some(format!(
+                "no review event: the diff could not be hashed: {e}"
+            ));
+        }
+    };
     let anchor = git::head_commit_hash(workspace_root);
     let ctx = crate::db::firings::FiringContext {
         surface,
@@ -495,7 +508,7 @@ pub fn record_constraint_firings(
         db,
         workspace_root,
         &ctx,
-        &sibling.report.patch,
+        patch,
         findings,
         registry,
         |path| check::read_scoped_content(workspace_root, content, path),
