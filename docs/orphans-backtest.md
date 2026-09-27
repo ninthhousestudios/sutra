@@ -63,10 +63,13 @@ its caller's edit lands.
 [`resolve_renames`](../src/tools/symbol_diff.rs) removes renames and moves.
 "Orphaned" candidates are the index symbols named by a reference on a
 removed, non-test line. A qualified reference (`Telemetry::start()`,
-`tools::dead::handle`) must name the candidate's type or module file.
-Production has no parse of the base tree, so a candidate is not checked for
-"was referenced before". The harness does check that, and the two agree on
-every recall commit.
+`tools::dead::handle`) must name the candidate's type or module file. A
+reference that names no type or module (unqualified, `self::`, `crate::`)
+counts only when its name has exactly one definition in the index (sutra/499).
+Production has no parse of the base tree, so it cannot check that a candidate
+"was referenced before". Without the uniqueness rule, removing `helper()`
+reported every dead `helper` in the workspace, including ones that were
+already dead. The harness does check "was referenced before".
 
 ### Liveness
 
@@ -97,10 +100,12 @@ members (flags & 15). Also never reported:
 
 - **Test support**: a symbol whose name contains "test" and that only tests
   reference (`Config::test_default`, `Db::conn_for_test`).
-- **Dart top-level and static variables**. The Dart adapter emits read refs
-  only for private names (sutra/288), so every public variable read is
-  missing (`ref.watch(fooProvider)`, `Xsd.xdouble`). This exclusion removed
-  18 of the 25 Dart items in the first tuning run, all false positives. It lifts when sutra/497 lands.
+- **Dart public top-level and static variables**. The Dart adapter emits
+  read refs only for private names (sutra/288), so every public variable read
+  is missing (`ref.watch(fooProvider)`, `Xsd.xdouble`). This exclusion removed
+  18 of the 25 Dart items in the first tuning run, all false positives. Private
+  (`_`-prefixed) variables have their reads extracted, so they stay reportable
+  (sutra/499). The exclusion lifts when sutra/497 lands.
 
 ### Where it runs and what it reads
 
@@ -110,6 +115,12 @@ already do. Liveness comes from the index, which holds the worktree. So:
 - The check runs when the reviewed side is the worktree, the staged index or
   HEAD. For each changed file whose reviewed content differs from the worktree
   (a staged hunk with unstaged edits on top), it adds an `incomplete` entry.
+- **Outside the diff, too** (sutra/499). The index holds the whole worktree,
+  so an uncommitted caller in a file the diff does not touch would hide an
+  orphan, and a deleted one would invent one. A staged or HEAD review is
+  `incomplete` when any tracked file in an indexed language differs between the
+  worktree and the reviewed side, or when any such file is untracked. The
+  entry names up to five of these files.
 - **A diff that ends at a historical commit is `skipped`, with the reason.**
   Liveness from a different tree would be wrong everywhere.
 - A changed file that is missing or stale in the index is `incomplete`, never
@@ -157,9 +168,9 @@ ran: the symbol exists there, and its references match the table.
 |---|---|---|---|---|
 | sutra/297 `DdEngine::invalidate` | 928f611 | introduced | no | Its callers in `daemon.rs` existed but were inert: `.invalidate()` on an Arc just removed from the map. No reference check sees that. |
 | | b9afe94 | daemon removed | **yes, orphaned** | 3: the target; `DdEngine::evict_if_idle` (real, **still dead at HEAD**, sutra/496); `parse_changed_files` (real, deleted as dead in d4da4c7) |
-| | bcca99d | tool consolidation dropped the live call | **yes, orphaned** | 6: the target; `ConstraintResolver::invalidate`, `FindArgs`, `ResolveArgs`, `resolve::handle` (real, deleted as dead in 884dfde); `ToolsMetaArgs` (real, deleted in a0f6d50) |
+| | bcca99d | tool consolidation dropped the live call | no, since sutra/499 (b9afe94 already fired) | 4: `FindArgs`, `ResolveArgs`, `resolve::handle` (real, deleted as dead in 884dfde); `ToolsMetaArgs` (real, deleted in a0f6d50). Before sutra/499 it also named the target and `ConstraintResolver::invalidate` (real). `.invalidate()` is unqualified and has two definitions, so the uniqueness rule drops both. |
 | adityas/ai/110 `Telemetry`, `TurnMetrics::emit` | 514e866 | introduced | no | Called from the preview route at birth |
-| | 348d4c9 | preview route deleted | **yes, orphaned** | 12: `Telemetry::{start, mark_first_token, record_round, record_tool, set_usage}` and `TurnMetrics::emit` (the target); `Knowledge::new`, `structural_rules`, `Relation::tokens`, `being_knowledge` (rewired 3 hours later in dd23961); `AppState::{kosha, vidya}` (real, **still dead at HEAD**) |
+| | 348d4c9 | preview route deleted | **yes, orphaned** | 12: `Telemetry::{start, mark_first_token, record_round, record_tool, set_usage}` and `TurnMetrics::emit` (the target); `Knowledge::new`, `structural_rules`, `Relation::tokens`, `being_knowledge` (rewired 3 hours later in dd23961). Since sutra/499 this is 10 items: `AppState::{kosha, vidya}` (real, **still dead at HEAD**) were accessed by unqualified field names with namesakes, and they drop out |
 | arjuna/arrow/24 `ViewSpec.canonicalConfig` | 7411163 | introduced | **yes, added** | 1: the target |
 | vidya/39 `load_synonyms` | 4d3408b | introduced | no, correctly | Wired from birth. The bug is that synonyms never persisted across processes, not reachability. |
 | adityas/ai/65 | — | — | out of reach | Cross-repo: the server reads `CreateTurnRequest.chart`, and the client in another repo never sends it |
@@ -192,8 +203,10 @@ from sutra (Rust), adityas/backend (Rust) and swe_dashboard (Dart). Labels:
 | Sample | Commits | Items | Commits with an item | STAGED | REAL | ACC | FP |
 |---|---|---|---|---|---|---|---|
 | tuning (seed 483), production, final rules | 24 | 12 | 5 | 11 | 0 | 0 | 1 |
+| tuning, after the uniqueness rule (sutra/499) | 24 | 11 | 4 | 11 | 0 | 0 | 0 |
 | **held-out (seed 7), rules frozen before the draw** | 24 | 17 | 5 | 9 | 1 | 3 | 4 |
 | held-out, after the arrow-closure fix (1c62d8c) | 24 | 13 | 3 | 9 | 1 | 3 | 0 |
+| held-out, after sutra/499 | 24 | 13 | 3 | 9 | 1 | 3 | 0 |
 
 Every staged item was wired in the next commit of the same task, 0 minutes
 to 2.5 hours later (five of the six within 9 minutes). A review of the task's whole branch would show
@@ -204,7 +217,8 @@ building.
 The tuning FP is `TracingSwissEph::entries` (swe a782481). `runner.dart`
 reads it as `_tracing.entries`, and the Dart resolver does not bind a getter
 through a private field's type. The diff removed an unrelated `.entries`
-access, so the item is attributed as `orphaned`. The held-out REAL item is
+access, so the item is attributed as `orphaned`. The uniqueness rule
+(sutra/499) removes it, because `entries` has more than one definition. The held-out REAL item is
 `Db::query_pattern_families` (sutra 06de2b6), which was never wired and was
 deleted as dead API four months later (sutra/481).
 
@@ -265,8 +279,14 @@ configurable imports), 1c62d8c (Dart arrow-body calls). Each also changes
 - **The held-out numbers after the fix are not blind.** The arrow-closure bug
   was found on the held-out sample. The frozen row is the honest measurement;
   the post-fix row shows what the parser bug cost.
-- **The `orphaned` name heuristic can attribute a symbol that was already
-  dead.** This happened once in the tuning sample, through the Dart getter
+- **The `orphaned` name heuristic trades recall for precision on shared
+  names.** Since sutra/499, an unqualified removal counts only for a name with
+  one definition. That rule removed the tuning sample's one false positive
+  (`TracingSwissEph::entries`). It also removed three real items from recall
+  commits (`ConstraintResolver::invalidate`, `AppState::{kosha, vidya}`) and
+  bcca99d's firing on the target, which b9afe94 had already caught. Every
+  incident still fires. Before the rule, the heuristic could attribute a
+  symbol that was already dead. This happened once in the tuning sample, through the Dart getter
   miss.
 - **Liveness is only as good as resolution.** A spurious binding hides an
   orphan (sutra/498). A missed binding invents one: the Dart classes above,
