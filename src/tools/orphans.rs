@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::db::Db;
 use crate::db::firings::{FiringContext, FiringRecord};
-use crate::db::orphans::SymbolSite;
+use crate::db::orphans::{Liveness, SymbolSite};
 use crate::error::Result;
 use crate::freshness::{self, FileStatus};
 use crate::git;
@@ -107,7 +107,16 @@ fn reportable(sym: &SymbolSite, is_test_path: &impl Fn(&str) -> bool) -> bool {
         // so a public top-level or static variable read (`ref.watch(fooProvider)`,
         // `Xsd.xdouble`) never binds and every such variable reads as
         // unreferenced: 18 of 25 Dart items in the back-test before this rule.
+        // Lift this once the adapter extracts those reads (sutra/497).
         && !(sym.language == "dart" && matches!(sym.kind.as_str(), "const" | "static"))
+}
+
+/// Unreferenced outside tests, and not test support: a helper whose name says
+/// it is for tests (`Config::test_default`, `Db::conn_for_test`) and that only
+/// tests reference is doing its job.
+fn unwired(sym: &SymbolSite, liveness: Liveness) -> bool {
+    !liveness.live
+        && (liveness.test_refs == 0 || !sym.short_name.to_ascii_lowercase().contains("test"))
 }
 
 fn adapter_for<'r>(registry: &'r LanguageRegistry, path: &str) -> Option<&'r dyn LanguageAdapter> {
@@ -277,7 +286,7 @@ pub fn analyze(
             continue;
         }
         let liveness = db.production_liveness(&first, is_test_path)?;
-        if !liveness.live && reported.insert(first.id) {
+        if unwired(&first, liveness) && reported.insert(first.id) {
             report
                 .findings
                 .push(Orphan::new(OrphanKind::Added, first, liveness.test_refs));
@@ -301,7 +310,7 @@ pub fn analyze(
                 continue;
             }
             let liveness = db.production_liveness(&sym, is_test_path)?;
-            if !liveness.live {
+            if unwired(&sym, liveness) {
                 reported.insert(sym.id);
                 report
                     .findings
@@ -552,6 +561,28 @@ mod tests {
         let free = site("handle", "src/tools/dead.rs");
         assert!(qualifier_fits(Some("tools::dead"), &free));
         assert!(!qualifier_fits(Some("tools::resolve"), &free));
+    }
+
+    #[test]
+    fn test_support_is_not_unwired_while_tests_use_it() {
+        let tested = Liveness {
+            live: false,
+            test_refs: 2,
+        };
+        let unused = Liveness {
+            live: false,
+            test_refs: 0,
+        };
+        assert!(!unwired(
+            &site("Config::test_default", "src/config.rs"),
+            tested
+        ));
+        assert!(!unwired(&site("Db::conn_for_test", "src/db.rs"), tested));
+        assert!(unwired(&site("Db::conn_for_test", "src/db.rs"), unused));
+        assert!(unwired(
+            &site("SmritiReader::read_cursor", "src/smriti.rs"),
+            tested
+        ));
     }
 
     #[test]

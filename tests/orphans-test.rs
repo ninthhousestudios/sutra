@@ -67,9 +67,9 @@ fn added_symbol_with_no_caller_is_named() {
         &[(
             "src/a.rs",
             "pub fn helper() -> u32 {\n    1\n}\n\npub fn built_ahead() -> u32 {\n    3\n}\n\n\
-             pub fn tested_only() -> u32 {\n    4\n}\n\n\
+             pub fn exercised_only() -> u32 {\n    4\n}\n\n\
              #[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        \
-             assert_eq!(super::tested_only(), 4);\n    }\n}\n",
+             assert_eq!(super::exercised_only(), 4);\n    }\n}\n",
         )],
     ]);
     let advisory = review_diff(&fx, "HEAD");
@@ -77,7 +77,7 @@ fn added_symbol_with_no_caller_is_named() {
         names(&advisory),
         vec![
             (OrphanKind::Added, "built_ahead", 0),
-            (OrphanKind::Added, "tested_only", 1),
+            (OrphanKind::Added, "exercised_only", 1),
         ]
     );
     let out = advisory.to_json();
