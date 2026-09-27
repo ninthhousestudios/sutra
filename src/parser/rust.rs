@@ -430,12 +430,16 @@ fn extract_flags(node: Node, src: &[u8]) -> u32 {
     flags
 }
 
+/// Whether a `cfg` attribute on `node` confines it to test builds. Parsed, not
+/// substring-matched: a `#[tool(description = "… #[cfg(test)] …")]` string is
+/// not a cfg, and marking that method test-only made every call it holds read
+/// as a test call (sutra/483).
 fn has_cfg_test_attr(node: Node, src: &[u8]) -> bool {
     let mut sib = node.prev_sibling();
     while let Some(s) = sib {
         if s.kind() == "attribute_item" {
-            let text = node_text(s, src);
-            if text.contains("cfg(test)") || text.contains("cfg( test )") {
+            let (path, args) = attribute_path_and_args(node_text(s, src));
+            if path == "cfg" && args.is_some_and(cfg_predicate_is_test) {
                 return true;
             }
         } else if s.kind() != "line_comment" && s.kind() != "block_comment" {
@@ -2163,6 +2167,24 @@ mod tests {
         let src = "#[no_mangle]\npub extern \"C\" fn ffi_entry() {}";
         let result = parse_rust(src, "test.rs").unwrap();
         assert_eq!(result.symbols[0].flags & FLAG_FFI_ENTRY, FLAG_FFI_ENTRY);
+    }
+
+    #[test]
+    fn cfg_test_in_an_attribute_string_is_not_a_cfg() {
+        let src = "impl S {\n    #[tool(description = \"skips #[cfg(test)] modules\")]\n    \
+                   pub async fn t(&self) {}\n\n    #[cfg(test)]\n    fn only_test(&self) {}\n\n    \
+                   #[cfg(all(test, feature = \"x\"))]\n    fn gated(&self) {}\n}";
+        let result = parse_rust(src, "lib.rs").unwrap();
+        let flat = crate::parser::flatten_symbols(&result.symbols);
+        let flags = |name: &str| {
+            flat.iter()
+                .find(|s| s.short_name == name)
+                .unwrap_or_else(|| panic!("symbol {name} not extracted"))
+                .flags
+        };
+        assert_eq!(flags("t") & FLAG_CFG_TEST, 0);
+        assert_eq!(flags("only_test") & FLAG_CFG_TEST, FLAG_CFG_TEST);
+        assert_eq!(flags("gated") & FLAG_CFG_TEST, FLAG_CFG_TEST);
     }
 
     #[test]
