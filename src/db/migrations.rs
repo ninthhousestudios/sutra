@@ -563,6 +563,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0092_recompute_hrr_symbol_root.sql"),
         false,
     ),
+    // HRR encoding changed again (sutra/503): sibling bag alongside the
+    // positional bundle. Same clear-and-recompute as 0092.
+    (
+        "0093_recompute_hrr_sibling_bag",
+        include_str!("../../migrations/0093_recompute_hrr_sibling_bag.sql"),
+        false,
+    ),
 ];
 
 impl Db {

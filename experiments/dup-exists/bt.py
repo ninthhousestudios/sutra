@@ -9,7 +9,7 @@ added, the most similar functions that existed at its parent.
   bt.py rank  <repo> <sha> <new> <orig>    where does <orig> rank for <new>?
   bt.py noise <repo> <sha> [--k K]         top hits for every function <sha> added
 
-Snapshots are cached under /tmp/bt463/snap. One worktree + one registered
+Snapshots are cached under $SUTRA_BT_ROOT/snap (default /tmp/bt463). One worktree + one registered
 workspace (id bt463-<name>) per repo; walking commits reparses incrementally.
 """
 
@@ -24,13 +24,16 @@ from collections import Counter
 
 import numpy as np
 
-ROOT = "/tmp/bt463"
+# To compare encoder variants, give each its own SUTRA_BT_ROOT and HOME (the
+# sutra index lives under $HOME/.sutra); SUTRA_BT_REGISTRY_HOME names the HOME
+# whose workspace registry supplies each repo's languages.
+ROOT = os.environ.get("SUTRA_BT_ROOT", "/tmp/bt463")
 DIM = 1024
 
 
-def sh(*args, cwd=None):
+def sh(*args, cwd=None, env=None):
     return subprocess.run(
-        args, cwd=cwd, check=True, capture_output=True, text=True
+        args, cwd=cwd, env=env, check=True, capture_output=True, text=True
     ).stdout
 
 
@@ -44,7 +47,9 @@ def full_sha(repo, sha):
 
 def registered_languages(repo):
     root = os.path.abspath(repo)
-    for line in sh("sutra", "workspaces", "list").splitlines():
+    env = dict(os.environ)
+    env["HOME"] = os.environ.get("SUTRA_BT_REGISTRY_HOME", env["HOME"])
+    for line in sh("sutra", "workspaces", "list", env=env).splitlines():
         parts = line.split("\t")
         if len(parts) >= 3 and os.path.abspath(parts[1]) == root:
             return [l.strip() for l in parts[2].strip("[] ").split(",") if l.strip()]

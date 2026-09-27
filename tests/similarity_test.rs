@@ -661,3 +661,60 @@ fn dart_method_and_top_level_function_with_same_body_are_similar() {
         assert!(sim > 0.8, "{mode}: method vs function sim={sim:.4}");
     }
 }
+
+// sutra/503: siblings were permuted only by absolute position, so one
+// statement inserted at the top of a block shifted every later sibling into an
+// unrelated subspace. A guard added to an otherwise identical body must keep
+// the two functions close, while reordering must still change the vector.
+#[test]
+fn leading_statement_insertion_keeps_functions_similar() {
+    let f = setup(&[(
+        "src/lib.rs",
+        concat!(
+            "fn guarded(x: i32) {\n",
+            "    if x < 0 { return; }\n",
+            "    let y = x + 1;\n",
+            "    log(y);\n",
+            "    store(y * 2);\n",
+            "    notify(y, x);\n",
+            "}\n",
+            "fn plain(x: i32) {\n",
+            "    let y = x + 1;\n",
+            "    log(y);\n",
+            "    store(y * 2);\n",
+            "    notify(y, x);\n",
+            "}\n",
+            "fn reordered(x: i32) {\n",
+            "    notify(y, x);\n",
+            "    store(y * 2);\n",
+            "    log(y);\n",
+            "    let y = x + 1;\n",
+            "}\n",
+        ),
+    )]);
+    parse(&f);
+
+    let id_of = |name: &str| -> i64 {
+        f.db.conn_for_test()
+            .query_row(
+                "SELECT id FROM symbols WHERE short_name = ?1 AND kind = 'function'",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("no symbol {name}: {e}"))
+    };
+    let (guarded, plain, reordered) = (id_of("guarded"), id_of("plain"), id_of("reordered"));
+    let vecs = load_vectors(&f.db);
+    for mode in ["strip", "embed"] {
+        let inserted = get_vec(&vecs, guarded, mode).cosine_similarity(get_vec(&vecs, plain, mode));
+        assert!(
+            inserted > 0.55,
+            "{mode}: guarded vs plain sim={inserted:.4}"
+        );
+    }
+    // Stripped, these statements are near-identical call shapes, so order is
+    // only observable once identifiers are bound in.
+    let swapped =
+        get_vec(&vecs, reordered, "embed").cosine_similarity(get_vec(&vecs, plain, "embed"));
+    assert!(swapped < 0.9, "embed: reordered vs plain sim={swapped:.4}");
+}

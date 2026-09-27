@@ -281,7 +281,36 @@ Representative DUP items:
   identical bodies score ~1.0. This pair still scores embed 0.10 (strip
   0.51), because the method's leading `if (!mounted) return;` shifts every
   later statement's position permutation. Without the guard it scores 0.66,
-  and 0.84 with the same parameters too. Insertion brittleness is sutra/503.
+  and 0.84 with the same parameters too. Fixed in sutra/503 (next item).
+- **HRR was brittle to statement insertion (sutra/503).** Siblings were
+  bundled only as position permutations, so one inserted statement moved
+  every later sibling into an unrelated subspace. Each node now bundles its
+  children twice, unpositioned and positioned, with equal weight. The pair
+  above now scores embed 0.75 (was 0.10) and strip 0.82 (was 0.51), and the
+  original ranks 1st of the parent's functions (was 138th). The cost is
+  weaker order sensitivity: a fully reversed body scores about 0.75 in
+  embed (was about 0.3). Re-running this back-test (current vs bag encoder,
+  same binary and samples):
+
+  | | current | bag |
+  |---|---|---|
+  | back-test cases fired (rule unchanged) | 6, same set | 6, same set |
+  | combo rank of the original, better / worse / same | | 9 / 4 / 5 of 18 |
+  | tuning sample, `block ≥ 6 or combo ≥ 0.5` | 51 functions | 54 functions |
+  | held-out sample, same rule | 41 functions | 44 functions |
+  | structural pattern families at 0.85 (sutra / swe_dashboard) | 68 / 41 families, 351 / 245 members | 48 / 41 families, 294 / 294 members |
+
+  Notable rank gains: sutra/459 15 → 2 (combo 0.31 → 0.51), sutra/437
+  292 → 38, sutra/261r 121 → 2, swisseph-rs/159 185 → 21. Losses: sutra/401
+  2 → 7, ai/119 55 → 105. The 3 extra items per sample are unlabelled; by
+  their matches they are mostly family siblings (`fromJson` pairs, parallel
+  adapter functions), and `being_type_for_name` vs `being_type_name` (lex
+  0.96) looks like a real duplicate. The current-encoder run gives 41
+  held-out items where the verdict above says 40. That drift predates this
+  change. Bigram encoding (each child bound to its predecessor's kind) was
+  also measured and rejected. It scored the pair only 0.36, and it lifted
+  the share of sutra strip pairs ≥ 0.85 from 2.4% to 8.7%, which would
+  swamp pattern families.
 - **embed ignores literals.** Match arms that map variants to strings score
   0.8 against any other such function (lex 0.0). This is why combo averages
   embed with lex instead of taking the max.

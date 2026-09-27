@@ -68,8 +68,12 @@ fn encode_recursive(
     }
 }
 
-/// Bundle of a node's named children and operator tokens, each permuted by
-/// position. `None` when the node has nothing to bundle.
+/// Bundle of a node's named children and operator tokens. Each child enters
+/// twice: unpositioned, and permuted by its position among siblings. The
+/// positional half alone makes one inserted statement shift every later
+/// sibling into an unrelated subspace (sutra/503); the unpositioned half keeps
+/// the shared children comparable at the cost of weaker order sensitivity.
+/// `None` when the node has nothing to bundle.
 fn encode_children(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -80,26 +84,24 @@ fn encode_children(
     if depth == 0 || node.child_count() == 0 {
         return None;
     }
-    let mut child_vecs = Vec::with_capacity(node.child_count());
-    let mut pos = 0usize;
+    let mut bag = Vec::with_capacity(node.child_count());
+    let mut positioned = Vec::with_capacity(node.child_count());
     for i in 0..node.child_count() {
         let child = node
             .child(i)
             .expect("invariant: index is below child_count");
-        if !child.is_named() {
-            if is_operator(child.kind()) {
-                let op_vec = codebook.get_or_create(child.kind());
-                child_vecs.push(op_vec.permute(pos + 1));
-                pos += 1;
-            }
+        let child_enc = if child.is_named() {
+            encode_recursive(&child, source, codebook, depth - 1, embed_idents)
+        } else if is_operator(child.kind()) {
+            codebook.get_or_create(child.kind())
+        } else {
             continue;
-        }
-        let child_enc = encode_recursive(&child, source, codebook, depth - 1, embed_idents);
-        child_vecs.push(child_enc.permute(pos + 1));
-        pos += 1;
+        };
+        positioned.push(child_enc.permute(positioned.len() + 1));
+        bag.push(child_enc);
     }
-    if child_vecs.is_empty() {
+    if bag.is_empty() {
         return None;
     }
-    Some(hrr::bundle(&child_vecs))
+    Some(hrr::bundle(&[hrr::bundle(&bag), hrr::bundle(&positioned)]))
 }
