@@ -28,7 +28,6 @@ pub mod provenance;
 pub mod read;
 pub mod refs;
 pub mod remember;
-pub mod resolve;
 pub mod review;
 pub mod scoring;
 pub mod sibling_pattern;
@@ -82,10 +81,6 @@ impl ToolContext {
             annotate_freshness,
             response_freshness,
         }
-    }
-
-    pub fn for_test(db: Arc<Db>, workspace_root: PathBuf) -> Self {
-        Self::new(db, workspace_root, false, serde_json::Value::Null)
     }
 
     pub fn for_test_with_freshness(db: Arc<Db>, workspace_root: PathBuf) -> Self {

@@ -1958,27 +1958,6 @@ impl Db {
         Ok(())
     }
 
-    /// Mark files as needing ref resolution (e.g. after their referenced symbols were deleted).
-    ///
-    /// Only flips the `needs_resolution` flag; it does not touch symbols or
-    /// resolved ref edges, so it correctly leaves `data_generation` unchanged —
-    /// the subsequent `replace_refs_and_clear_resolution` bumps it (sutra/396).
-    pub fn mark_needs_resolution(&self, file_ids: &[i64]) -> Result<()> {
-        if file_ids.is_empty() {
-            return Ok(());
-        }
-        let placeholders: String = file_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!("UPDATE files SET needs_resolution = 1 WHERE id IN ({placeholders})");
-        let conn = self.conn.lock();
-        conn.execute(&sql, rusqlite::params_from_iter(file_ids.iter()))?;
-        Ok(())
-    }
-
     /// Return IDs of all files that need ref resolution.
     pub fn files_needing_resolution(&self) -> Result<Vec<i64>> {
         let conn = self.conn.lock();
@@ -2008,20 +1987,6 @@ impl Db {
             |row| row.get(0),
         )?;
         Ok(data_gen)
-    }
-
-    /// Return the generation up to which the derived tier is marked complete.
-    /// Health publication has its own sequence and must never advance this
-    /// (health evidence contract, sutra/412) — the symmetric partner to
-    /// [`Db::set_derived_complete`].
-    pub fn get_derived_complete_generation(&self) -> Result<i64> {
-        let conn = self.conn.lock();
-        let generation: i64 = conn.query_row(
-            "SELECT derived_complete_generation FROM index_meta WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(generation)
     }
 
     /// The query-time symbol wiring graph (sutra/372), built once per workspace

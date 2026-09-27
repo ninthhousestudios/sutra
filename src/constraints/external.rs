@@ -608,12 +608,6 @@ pub fn scan_project_files(root: &Path) -> ProjectFiles {
     pf
 }
 
-/// Walk the workspace for Cargo.toml files (depth-limited, skips target/,
-/// hidden dirs, node_modules) and return (rel_path, content) pairs.
-pub fn scan_workspace_manifests(root: &Path) -> Vec<(String, String)> {
-    scan_project_files(root).manifests
-}
-
 /// Read member Cargo.toml files for declared `[workspace].members` in the
 /// given root content. Only returns manifests for members that exist on disk.
 pub fn workspace_member_manifests(root: &Path, root_content: &str) -> Vec<(String, String)> {

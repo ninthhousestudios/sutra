@@ -192,12 +192,6 @@ impl Db {
         Ok(())
     }
 
-    pub fn hrr_vector_count(&self) -> Result<i64> {
-        let conn = self.conn.lock();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM hrr_vectors", [], |r| r.get(0))?;
-        Ok(count)
-    }
-
     pub fn load_hrr_vector(&self, symbol_id: i64, mode: &str) -> Result<Option<HrrVec>> {
         let conn = self.conn.lock();
         let mut stmt =
@@ -271,48 +265,6 @@ impl Db {
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM pattern_families", [], |r| r.get(0))?;
         Ok(count)
-    }
-
-    pub fn query_pattern_families(&self) -> Result<Vec<PatternFamilyRow>> {
-        let conn = self.conn.lock();
-        let mut fam_stmt =
-            conn.prepare("SELECT id, member_count, avg_similarity FROM pattern_families ORDER BY member_count DESC")?;
-        let mut mem_stmt = conn.prepare(
-            "SELECT m.symbol_id, s.qualified_name, f.path, s.start_line, s.end_line
-             FROM pattern_family_members m
-             JOIN symbols s ON m.symbol_id = s.id
-             JOIN files f ON s.file_id = f.id
-             WHERE m.family_id = ?1
-             ORDER BY f.path, s.start_line",
-        )?;
-
-        let mut result = Vec::new();
-        let mut rows = fam_stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let family_id: i64 = row.get(0)?;
-            let member_count: i64 = row.get(1)?;
-            let avg_similarity: f64 = row.get(2)?;
-
-            let members = mem_stmt
-                .query_map(params![family_id], |r| {
-                    Ok(PatternFamilyMember {
-                        symbol_id: r.get(0)?,
-                        qualified_name: r.get(1)?,
-                        file_path: r.get(2)?,
-                        start_line: r.get(3)?,
-                        end_line: r.get(4)?,
-                    })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-
-            result.push(PatternFamilyRow {
-                family_id,
-                member_count,
-                avg_similarity,
-                members,
-            });
-        }
-        Ok(result)
     }
 
     pub fn symbols_by_ids(&self, ids: &[i64]) -> Result<Vec<SymbolSummary>> {

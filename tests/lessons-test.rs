@@ -2901,9 +2901,7 @@ fn symbol_anchor_outranks_directory_anchor() {
     assert_eq!(lessons[0].id, narrow);
 
     // And it survives a cap of one, which is the point of the ranking.
-    let capped = db
-        .query_for_context_capped(&ctx, &[], 1, sutra::lessons::Surfacing::Record)
-        .unwrap();
+    let capped = db.query_for_context_capped(&ctx, &[], 1).unwrap();
     assert_eq!(capped.lessons[0].id, narrow);
     assert_eq!(capped.omitted, 1);
 }

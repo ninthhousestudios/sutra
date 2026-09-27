@@ -176,16 +176,6 @@ impl HrrVec {
         }
     }
 
-    pub fn normalize_in_place(&mut self) {
-        let n = self.norm();
-        if n < 1e-15 {
-            return;
-        }
-        for x in &mut self.data {
-            *x /= n;
-        }
-    }
-
     pub fn add(&self, other: &Self) -> Self {
         Self {
             data: self

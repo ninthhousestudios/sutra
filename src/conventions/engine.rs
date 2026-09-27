@@ -158,10 +158,6 @@ impl FcaEngine {
         self.rebuild(&self.symbol_attrs.clone())
     }
 
-    pub fn set_conventions(&mut self, conventions: Vec<Convention>) {
-        self.conventions = conventions;
-    }
-
     pub fn conventions(&self) -> &[Convention] {
         &self.conventions
     }

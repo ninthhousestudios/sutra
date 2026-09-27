@@ -291,16 +291,6 @@ pub fn build_file_adjacency(
     (fan_in_map, outgoing)
 }
 
-pub fn compute_rollups(db: &Db, files: &[crate::db::FileRow]) -> Result<()> {
-    if files.is_empty() {
-        return Ok(());
-    }
-
-    let gd = GraphData::load(db)?;
-    let adjacency = build_file_adjacency(files, &gd);
-    compute_rollups_with_adjacency(db, files, &adjacency)
-}
-
 /// Recompute `fan_in_files` and `blast_radius` for every file and write the
 /// rows whose stored values differ. There is no dirty-set shortcut: blast
 /// radius is a depth-3 BFS over dependents, so one changed edge moves the
@@ -363,15 +353,6 @@ fn bfs_blast_radius(
     }
 
     visited.len() - 1
-}
-
-pub fn compute_pagerank(db: &Db, files: &[crate::db::FileRow]) -> Result<()> {
-    if files.is_empty() {
-        return Ok(());
-    }
-    let gd = GraphData::load(db)?;
-    let adjacency = build_file_adjacency(files, &gd);
-    compute_pagerank_with_adjacency(db, files, &adjacency, &gd)
 }
 
 pub fn compute_pagerank_with_adjacency(

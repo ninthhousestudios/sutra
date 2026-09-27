@@ -1,5 +1,3 @@
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
@@ -7,19 +5,6 @@ use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
 
 use super::ToolContext;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct FindArgs {
-    #[serde(default)]
-    pub workspace: String,
-    pub name: String,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-    #[serde(default)]
-    pub detail: Option<bool>,
-}
 
 pub fn handle(
     db: &Db,

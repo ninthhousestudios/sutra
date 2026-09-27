@@ -55,17 +55,6 @@ impl BitSet {
         r
     }
 
-    pub fn is_subset_of(&self, other: &Self) -> bool {
-        debug_assert_eq!(
-            self.len, other.len,
-            "BitSet::is_subset_of on different lengths"
-        );
-        self.words
-            .iter()
-            .zip(&other.words)
-            .all(|(a, b)| *a & *b == *a)
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.len).filter(|&i| self.contains(i))
     }

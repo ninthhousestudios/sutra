@@ -115,10 +115,6 @@ impl ConstraintResolver {
 
         Ok(pairs)
     }
-
-    pub fn invalidate(&mut self) {
-        self.cache = None;
-    }
 }
 
 fn file_ids_for(

@@ -236,24 +236,12 @@ pub fn worktree_overlay(workspace_root: &Path, scope: DiffScope) -> Result<DiffS
     })
 }
 
-/// Resolve a diff-mode string to `(changed_paths, base_revision, head_revision)`.
-///
-/// Shared by the review compositor and the `sutra check` CLI gate so both
-/// interpret `"staged"` / `"unstaged"` / `"branch"` / a commit spec identically.
+/// Resolve a diff-mode string (`"staged"` / `"unstaged"` / `"branch"` / a
+/// commit spec) to its per-file entries, so a rename's base side is read from
+/// its old path. Every mode detects renames (`--name-status -M`).
 /// `head_revision` is `Some("")` for staged (the index), `None` for unstaged
 /// (the worktree), and an explicit revision otherwise; `base_revision` is `""`
 /// (the index) for unstaged, so both sides match what `git diff` compared.
-pub fn resolve_diff_scope(
-    workspace_root: &Path,
-    mode: &str,
-) -> Result<(Vec<String>, String, Option<String>)> {
-    let scope = resolve_diff_entries(workspace_root, mode)?;
-    let paths = scope.paths();
-    Ok((paths, scope.base_revision, scope.head_revision))
-}
-
-/// [`resolve_diff_scope`] keeping the per-file entries, so a rename's base side
-/// is read from its old path. Every mode detects renames (`--name-status -M`).
 pub fn resolve_diff_entries(workspace_root: &Path, mode: &str) -> Result<DiffScope> {
     let (entries, base_revision, head_revision) = match mode {
         "staged" => (

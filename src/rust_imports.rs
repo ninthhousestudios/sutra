@@ -174,23 +174,6 @@ pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
     Ok(resolved_count)
 }
 
-pub fn read_crate_name(workspace_root: &Path) -> Option<String> {
-    let cargo = std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok()?;
-    for line in cargo.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("name") {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix('=') {
-                let val = rest.trim().trim_matches('"').trim_matches('\'');
-                if !val.is_empty() {
-                    return Some(val.replace('-', "_"));
-                }
-            }
-        }
-    }
-    None
-}
-
 // ── Cross-crate resolution ────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]

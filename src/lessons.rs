@@ -438,21 +438,6 @@ pub struct MatchContext<'a> {
 
 const CONTEXT_SURFACING_CAP: usize = 10;
 
-/// Whether a context query refreshes the decay timers of what it returns.
-///
-/// `last_surfaced` is evidence that a lesson was put in front of someone, and
-/// [`LessonsDb::archive_decayed`] spares anything recently surfaced. A caller
-/// that narrows the result set further after the query must not let the query
-/// record on its behalf.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Surfacing {
-    /// Everything returned is being shown; record it.
-    Record,
-    /// The caller will cap further and call [`LessonsDb::mark_surfaced`] with
-    /// what it actually emits.
-    Deferred,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextLessons {
     pub lessons: Vec<SurfacedLesson>,
@@ -621,7 +606,7 @@ fn symbol_anchor_candidates<'s>(symbol_name: &'s str, extra_symbols: &[&'s str])
 
 impl LessonsDb {
     pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<ContextLessons> {
-        self.query_for_context_capped(ctx, &[], CONTEXT_SURFACING_CAP, Surfacing::Record)
+        self.query_for_context_capped(ctx, &[], CONTEXT_SURFACING_CAP)
     }
 
     /// As [`query_for_context`], but also matches symbol anchors against a set
@@ -635,27 +620,23 @@ impl LessonsDb {
         ctx: &MatchContext<'_>,
         symbols: &[&str],
     ) -> Result<ContextLessons> {
-        self.query_for_context_capped(ctx, symbols, CONTEXT_SURFACING_CAP, Surfacing::Record)
+        self.query_for_context_capped(ctx, symbols, CONTEXT_SURFACING_CAP)
     }
 
-    /// As `query_for_context`, but with a caller-supplied cap and control over
-    /// surfacing bookkeeping.
+    /// As `query_for_context`, but with a caller-supplied cap.
     ///
-    /// Callers that merge several contexts (orient walks every file in a
-    /// component) need the complete per-context set before they can cap the
-    /// merged set honestly — a per-context cap makes their `omitted` count a
-    /// lie. Such a caller passes `usize::MAX` with [`Surfacing::Deferred`],
-    /// caps the merged set itself, then calls [`LessonsDb::mark_surfaced`]
-    /// with what it actually emitted. Recording here instead would refresh the
-    /// decay timer of every candidate the query touched, which is how a broad
+    /// Only the lessons that survive the cap have their decay timers refreshed:
+    /// `last_surfaced` is evidence a lesson was put in front of someone, and
+    /// [`LessonsDb::archive_decayed`] spares anything recently surfaced.
+    /// Recording every candidate the query touched is how a broad
     /// directory-anchored lesson stays unarchivable forever without ever being
-    /// shown to anyone.
+    /// shown to anyone (sutra/280). A caller that narrows the result further
+    /// after this call would re-open that hole — cap here instead.
     pub fn query_for_context_capped(
         &self,
         ctx: &MatchContext<'_>,
         extra_symbols: &[&str],
         cap: usize,
-        surfacing: Surfacing,
     ) -> Result<ContextLessons> {
         let conn = self.conn.lock();
 
@@ -839,20 +820,10 @@ impl LessonsDb {
         let omitted = total.saturating_sub(cap);
         lessons.truncate(cap);
 
-        if surfacing == Surfacing::Record {
-            let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
-            Self::mark_surfaced_locked(&conn, &ids, self.read_only)?;
-        }
+        let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
+        Self::mark_surfaced_locked(&conn, &ids, self.read_only)?;
 
         Ok(ContextLessons { lessons, omitted })
-    }
-
-    /// Record that these lessons were actually put in front of someone.
-    ///
-    /// For callers that used [`Surfacing::Deferred`]; see the note there.
-    pub fn mark_surfaced(&self, ids: &[&str]) -> Result<()> {
-        let conn = self.conn.lock();
-        Self::mark_surfaced_locked(&conn, ids, self.read_only)
     }
 
     /// Surfacing bookkeeping is a write, and the guard's handle is inside a
@@ -1309,20 +1280,6 @@ impl LessonsDb {
 impl LessonsDb {
     /// Archive unverified lessons that haven't been cited or surfaced within
     /// `window_secs` seconds. Returns the number of lessons archived.
-    /// When this lesson was last put in front of someone, or `None` if never.
-    pub fn last_surfaced(&self, lesson_id: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock();
-        let value = conn
-            .query_row(
-                "SELECT last_surfaced FROM lessons WHERE id = ?1",
-                params![lesson_id],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .ok()
-            .flatten();
-        Ok(value)
-    }
-
     pub fn archive_decayed(&self, window_secs: i64) -> Result<usize> {
         let conn = self.conn.lock();
         let changed = conn.execute(

@@ -114,11 +114,4 @@ impl Db {
         )?;
         Ok(())
     }
-
-    pub fn convention_count(&self) -> Result<usize> {
-        let conn = self.conn.lock();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM conventions", [], |row| row.get(0))?;
-        Ok(count as usize)
-    }
 }

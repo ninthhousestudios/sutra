@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
-use serde_json::json;
 use uuid::Uuid;
 
 use crate::db::AliasRow;
@@ -108,10 +107,6 @@ fn push_alias(
 pub fn parse_aliases(content: &str) -> Result<AliasConfig> {
     toml::from_str(content)
         .map_err(|e| SutraError::Internal(format!("aliases.toml parse error: {e}")))
-}
-
-pub fn load_aliases(root: &Path) -> Result<AliasConfig> {
-    parse_aliases(&read_aliases_source(root)?)
 }
 
 /// Raw contents of `.sutra/aliases.toml`, or the empty string when the file is
@@ -329,41 +324,6 @@ fn resolve_alias_row(db: &Db, alias: &AliasRow) -> Result<ResolveMatch> {
         orphan,
         locations,
     })
-}
-
-pub fn resolve_to_json(db: &Db, query: &str) -> Result<serde_json::Value> {
-    let matches = resolve(db, query)?;
-    let (orphans, valid): (Vec<_>, Vec<_>) = matches.into_iter().partition(|m| m.orphan);
-
-    let format = |m: &ResolveMatch| {
-        let locs: Vec<_> = m
-            .locations
-            .iter()
-            .map(|l| {
-                let mut loc = json!({"path": l.path});
-                if let Some(sl) = l.start_line {
-                    loc["start_line"] = json!(sl);
-                }
-                if let Some(el) = l.end_line {
-                    loc["end_line"] = json!(el);
-                }
-                loc
-            })
-            .collect();
-        json!({
-            "source": m.source,
-            "target_kind": m.target_kind,
-            "target_ref": m.target_ref,
-            "component_id": m.component_id,
-            "locations": locs,
-        })
-    };
-
-    Ok(json!({
-        "query": query,
-        "matches": valid.iter().map(format).collect::<Vec<_>>(),
-        "orphans": orphans.iter().map(format).collect::<Vec<_>>(),
-    }))
 }
 
 // ---------------------------------------------------------------------------

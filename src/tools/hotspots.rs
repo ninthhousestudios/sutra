@@ -21,15 +21,6 @@ pub struct HotspotsArgs {
     pub limit: Option<i64>,
 }
 
-pub fn handle(
-    db: &Db,
-    workspace_root: &Path,
-    window_days: Option<u32>,
-    limit: Option<i64>,
-) -> Result<serde_json::Value> {
-    handle_inner(db, workspace_root, window_days, limit, None)
-}
-
 pub fn handle_ctx(
     ctx: &ToolContext,
     window_days: Option<u32>,

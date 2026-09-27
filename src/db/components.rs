@@ -47,25 +47,6 @@ impl Db {
         )
     }
 
-    pub fn insert_component(&self, id: &str, name: &str) -> Result<()> {
-        self.conn.lock().execute(
-            "INSERT INTO components (id, name) VALUES (?1, ?2)",
-            params![id, name],
-        )?;
-        Ok(())
-    }
-
-    pub fn delete_all_components(&self) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute_batch(
-            "DELETE FROM component_membership; \
-             DELETE FROM component_events; \
-             DELETE FROM semantic_anchors; \
-             DELETE FROM components",
-        )?;
-        Ok(())
-    }
-
     /// Atomically insert components and their membership rows.
     pub fn batch_create_components(
         &self,

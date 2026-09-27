@@ -473,36 +473,6 @@ fn test_orphan_detected_for_missing_file() {
 // MCP tool output
 // ---------------------------------------------------------------------------
 
-#[test]
-fn test_resolve_tool_output_shape() {
-    let (dir, db) = setup_db();
-    pin_resolution(dir.path());
-    setup_component(&db, dir.path());
-
-    let sutra_dir = dir.path().join(".sutra");
-    std::fs::write(
-        sutra_dir.join("aliases.toml"),
-        "[file]\nmissing = \"src/gone.rs\"\n",
-    )
-    .unwrap();
-    vocabulary::sync_aliases(&db, dir.path()).unwrap();
-
-    // Resolve a term that hits alias (orphan) + component + anchors
-    let result = vocabulary::resolve_to_json(&db, "auth").unwrap();
-    assert!(result["query"].as_str().unwrap() == "auth");
-    assert!(result["matches"].is_array());
-    assert!(result["orphans"].is_array());
-
-    // Resolve the orphan alias
-    let result = vocabulary::resolve_to_json(&db, "missing").unwrap();
-    assert_eq!(result["matches"].as_array().unwrap().len(), 0);
-    assert_eq!(result["orphans"].as_array().unwrap().len(), 1);
-
-    // Locations present in JSON output
-    let matches = result["orphans"].as_array().unwrap();
-    assert!(matches[0]["locations"].is_array());
-}
-
 // ---------------------------------------------------------------------------
 // Code locations
 // ---------------------------------------------------------------------------
@@ -575,22 +545,6 @@ fn test_resolve_file_alias_includes_path_location() {
     assert_eq!(alias.locations.len(), 1);
     assert_eq!(alias.locations[0].path, "src/auth/a1.rs");
     assert!(alias.locations[0].start_line.is_none());
-}
-
-#[test]
-fn test_resolve_json_includes_locations() {
-    let (dir, db) = setup_db();
-    pin_resolution(dir.path());
-    setup_component(&db, dir.path());
-
-    let result = vocabulary::resolve_to_json(&db, "auth_login").unwrap();
-    let matches = result["matches"].as_array().unwrap();
-    let anchor = matches.iter().find(|m| m["source"] == "anchor").unwrap();
-    let locs = anchor["locations"].as_array().unwrap();
-    assert!(!locs.is_empty());
-    assert!(locs[0]["path"].is_string());
-    assert!(locs[0]["start_line"].is_number());
-    assert!(locs[0]["end_line"].is_number());
 }
 
 // ---------------------------------------------------------------------------

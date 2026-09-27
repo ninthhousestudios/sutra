@@ -60,17 +60,4 @@ impl Diagnostic {
             | Diagnostic::SymbolExistsWithNoResults { suggestion, .. } => suggestion,
         }
     }
-
-    pub fn with_freshness(mut self, level: FreshnessLevel) -> Self {
-        match &mut self {
-            Diagnostic::NoSuchSymbol { freshness, .. }
-            | Diagnostic::Ambiguous { freshness, .. }
-            | Diagnostic::Stale { freshness, .. }
-            | Diagnostic::PartialResolution { freshness, .. }
-            | Diagnostic::SymbolExistsWithNoResults { freshness, .. } => {
-                *freshness = Some(level);
-            }
-        }
-        self
-    }
 }
