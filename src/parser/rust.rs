@@ -419,6 +419,9 @@ fn extract_flags(node: Node, src: &[u8]) -> u32 {
             {
                 flags |= FLAG_FFI_ENTRY;
             }
+            if is_framework_registration_attribute(path) {
+                flags |= FLAG_FFI_ENTRY;
+            }
         } else if s.kind() != "line_comment" && s.kind() != "block_comment" {
             break;
         }
@@ -1668,6 +1671,13 @@ fn attribute_path_and_args(text: &str) -> (&str, Option<&str>) {
     (path.trim(), args)
 }
 
+/// Attributes whose macro registers the item with a framework that invokes it
+/// by generated code the index never sees: rmcp's `#[tool]` (sutra/481). Path
+/// match, not substring — `#[tool_router]` sits on the impl, not the methods.
+fn is_framework_registration_attribute(path: &str) -> bool {
+    matches!(path, "tool" | "rmcp::tool")
+}
+
 /// `#[test]` and namespaced test harnesses: `#[tokio::test]`,
 /// `#[sqlx::test(migrations = "..")]`.
 fn is_test_fn_attribute(path: &str) -> bool {
@@ -2153,6 +2163,22 @@ mod tests {
         let src = "#[no_mangle]\npub extern \"C\" fn ffi_entry() {}";
         let result = parse_rust(src, "test.rs").unwrap();
         assert_eq!(result.symbols[0].flags & FLAG_FFI_ENTRY, FLAG_FFI_ENTRY);
+    }
+
+    #[test]
+    fn flag_detects_rmcp_tool_method() {
+        let src = "impl S {\n    /// doc\n    #[tool(description = \"x\")]\n    pub async fn t(&self) {}\n\n    \
+                   #[tool_router]\n    pub fn not_a_tool(&self) {}\n}";
+        let result = parse_rust(src, "lib.rs").unwrap();
+        let flat = crate::parser::flatten_symbols(&result.symbols);
+        let flags = |name: &str| {
+            flat.iter()
+                .find(|s| s.short_name == name)
+                .unwrap_or_else(|| panic!("symbol {name} not extracted"))
+                .flags
+        };
+        assert_eq!(flags("t") & FLAG_FFI_ENTRY, FLAG_FFI_ENTRY);
+        assert_eq!(flags("not_a_tool") & FLAG_FFI_ENTRY, 0);
     }
 
     #[test]

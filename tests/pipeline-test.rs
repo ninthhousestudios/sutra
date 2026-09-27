@@ -647,6 +647,15 @@ impl Adapter for Rust {
 }
 
 fn run(a: &dyn Adapter) -> u8 { a.parse() }
+
+struct Server;
+impl Server {
+    /// Registered by rmcp's generated router, never called by name.
+    #[tool(description = "x")]
+    async fn sutra_ping(&self) -> u8 { 0 }
+    fn server_unused(&self) {}
+}
+
 fn as_value(x: u8) -> u8 { x }
 fn unused_helper() {}
 
@@ -713,6 +722,7 @@ fn main() {
     for (path, qn) in [
         ("src/main.rs", "UNUSED_LIMIT"),
         ("src/main.rs", "unused_helper"),
+        ("src/main.rs", "Server::server_unused"),
         ("src/tools/dead.rs", "handle"),
     ] {
         assert!(
@@ -721,12 +731,13 @@ fn main() {
         );
     }
     for (path, qn) in [
-        ("src/main.rs", "WITHDRAWAL_ACK"), // format-string inline arg
-        ("src/main.rs", "GREETING"),       // macro argument
-        ("src/main.rs", "as_value"),       // fn passed as a value
-        ("src/main.rs", "Rust::parse"),    // trait impl method
-        ("src/main.rs", "Adapter::parse"), // trait method, dispatched
-        ("src/tools/calls.rs", "handle"),  // module-qualified call
+        ("src/main.rs", "WITHDRAWAL_ACK"),     // format-string inline arg
+        ("src/main.rs", "GREETING"),           // macro argument
+        ("src/main.rs", "as_value"),           // fn passed as a value
+        ("src/main.rs", "Server::sutra_ping"), // rmcp #[tool] (sutra/481)
+        ("src/main.rs", "Rust::parse"),        // trait impl method
+        ("src/main.rs", "Adapter::parse"),     // trait method, dispatched
+        ("src/tools/calls.rs", "handle"),      // module-qualified call
         ("src/health/findings.rs", "finding_count"), // glob re-export
         ("server/tests/api.rs", "creates_a_chart"), // #[sqlx::test] in a member's tests/
     ] {
