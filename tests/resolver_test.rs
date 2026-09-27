@@ -587,6 +587,22 @@ fn test_class_call_construction_is_python_scoped() {
     );
 }
 
+/// `Err(e)` is the prelude constructor. An associated `type Err = ..` that is
+/// the workspace's only `Err` must not catch it through the kind-agnostic
+/// fallback, while a unique tuple struct still binds (sutra/487).
+#[test]
+fn test_rust_bare_call_never_binds_type_alias() {
+    let refs = vec![make_ref("Err", 10, RefContextKind::Call)];
+    let alias = vec![sym_in_file(1, "KeyWrapping::Err", "Err", "type_alias", 1)];
+    let resolved = resolve(&[], &refs, &alias, &[], 0);
+    assert_eq!(resolved[0].target_symbol_id, None, "{resolved:?}");
+
+    let refs = vec![make_ref("Wrapper", 10, RefContextKind::Call)];
+    let tuple_struct = vec![sym_in_file(2, "Wrapper", "Wrapper", "struct", 1)];
+    let resolved = resolve(&[], &refs, &tuple_struct, &[], 0);
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+}
+
 #[test]
 fn test_construction_prefers_struct_over_function() {
     let file_symbols = vec![];

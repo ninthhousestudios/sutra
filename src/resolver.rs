@@ -451,11 +451,17 @@ fn resolve_single(
         }
     }
 
-    // Kind-agnostic last resort; a Rust receiver call stays method-only.
+    // Kind-agnostic last resort; a Rust receiver call stays method-only. A
+    // bare Rust call that reached here is a tuple-struct constructor or
+    // something outside the workspace (`Err(..)`, a variant, a closure), so it
+    // binds only a struct, never a type alias such as `type Err = ..` (sutra/487).
     if use_kind_filter && !matches!(filter, KindFilter::MethodOnly) {
         let fallback = index.short(name);
-        if fallback.len() == 1 {
-            return resolved(r, fallback[0].id, ResolutionMethod::GlobalFallback);
+        let rust_call = lang == "rust" && matches!(r.context_kind, RefContextKind::Call);
+        if let [only] = fallback
+            && (!rust_call || only.kind == "struct")
+        {
+            return resolved(r, only.id, ResolutionMethod::GlobalFallback);
         }
     }
 
