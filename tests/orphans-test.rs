@@ -217,3 +217,118 @@ fn findings_are_logged_once_per_review_event() {
     assert_eq!(rows[0].file_path, "src/a.rs");
     assert_eq!(rows[0].snippet.as_deref(), Some("pub fn helper() -> u32 {"));
 }
+
+const BUILT_AHEAD: &str =
+    "pub fn helper() -> u32 {\n    1\n}\n\npub fn built_ahead() -> u32 {\n    3\n}\n";
+
+fn incomplete_names(advisory: &Advisory, path: &str) -> bool {
+    advisory.report.incomplete.iter().any(|i| i.contains(path))
+}
+
+#[test]
+fn a_head_review_with_a_dirty_file_outside_the_diff_is_incomplete() {
+    let root = repo(&[
+        &[
+            ("src/lib.rs", LIB),
+            ("src/a.rs", HELPER),
+            ("src/b.rs", CALLER),
+        ],
+        &[("src/a.rs", BUILT_AHEAD)],
+    ]);
+    // Uncommitted: the only caller of `built_ahead` is not in the reviewed commit.
+    support::write(
+        root.path(),
+        "src/b.rs",
+        "pub fn caller() -> u32 {\n    crate::a::helper() + crate::a::built_ahead()\n}\n",
+    );
+    let fx = index(root, "orphans");
+    let advisory = review_diff(&fx, "HEAD");
+    assert!(
+        incomplete_names(&advisory, "src/b.rs"),
+        "{:?}",
+        advisory.report.incomplete
+    );
+    assert!(advisory.to_json()["incomplete"].is_array());
+}
+
+#[test]
+fn a_staged_review_with_an_untracked_caller_is_incomplete() {
+    let root = repo(&[&[
+        ("src/lib.rs", LIB),
+        ("src/a.rs", HELPER),
+        ("src/b.rs", CALLER),
+    ]]);
+    support::write(root.path(), "src/a.rs", BUILT_AHEAD);
+    support::git(root.path(), &["add", "src/a.rs"]);
+    support::write(
+        root.path(),
+        "src/c.rs",
+        "pub fn other() -> u32 {\n    crate::a::built_ahead()\n}\n",
+    );
+    let fx = index(root, "orphans");
+    let advisory = review_diff(&fx, "staged");
+    assert!(
+        incomplete_names(&advisory, "src/c.rs"),
+        "{:?}",
+        advisory.report.incomplete
+    );
+}
+
+#[test]
+fn a_clean_staged_review_is_complete() {
+    let root = repo(&[&[
+        ("src/lib.rs", LIB),
+        ("src/a.rs", HELPER),
+        ("src/b.rs", CALLER),
+    ]]);
+    support::write(root.path(), "src/a.rs", BUILT_AHEAD);
+    support::git(root.path(), &["add", "src/a.rs"]);
+    let fx = index(root, "orphans");
+    assert_eq!(
+        names(&review_diff(&fx, "staged")),
+        vec![(OrphanKind::Added, "built_ahead", 0)]
+    );
+}
+
+#[test]
+fn an_unqualified_removal_does_not_orphan_an_already_dead_namesake() {
+    let fx = fixture(&[
+        &[
+            ("src/lib.rs", "pub mod a;\npub mod b;\npub mod c;\n"),
+            ("src/a.rs", HELPER),
+            // Dead before the diff; nothing ever called it.
+            ("src/c.rs", "pub fn helper() -> u32 {\n    9\n}\n"),
+            (
+                "src/b.rs",
+                "use crate::a::helper;\n\npub fn caller() -> u32 {\n    helper()\n}\n",
+            ),
+        ],
+        &[("src/b.rs", NO_CALL)],
+    ]);
+    let advisory = review_diff(&fx, "HEAD");
+    let files: Vec<_> = advisory
+        .report
+        .findings
+        .iter()
+        .map(|f| (f.kind, f.symbol.as_str(), f.file.as_str()))
+        .collect();
+    // The price of attributing by name without the base tree: `a::helper`,
+    // the one this diff did orphan, is dropped with its namesake. An
+    // ambiguous name reports nothing rather than a symbol that was already dead.
+    assert_eq!(files, vec![]);
+}
+
+#[test]
+fn an_unused_private_dart_variable_fires_and_a_public_one_does_not() {
+    let fx = fixture(&[
+        &[("lib/main.dart", "void main() {}\n")],
+        &[(
+            "lib/main.dart",
+            "const _unusedPrivate = 1;\nconst unusedPublic = 2;\n\nvoid main() {}\n",
+        )],
+    ]);
+    assert_eq!(
+        names(&review_diff(&fx, "HEAD")),
+        vec![(OrphanKind::Added, "_unusedPrivate", 0)]
+    );
+}

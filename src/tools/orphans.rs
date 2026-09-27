@@ -14,7 +14,8 @@
 //! yet. Liveness is read from the index, which the review surfaces refresh to
 //! the worktree first, so the check runs only when the reviewed side is the
 //! worktree, the index or HEAD; a changed file whose reviewed content differs
-//! from what was indexed makes the result `incomplete`, never clean.
+//! from what was indexed, or an indexed file outside the diff that differs
+//! from the reviewed side, makes the result `incomplete`, never clean.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
@@ -107,8 +108,11 @@ fn reportable(sym: &SymbolSite, is_test_path: &impl Fn(&str) -> bool) -> bool {
         // so a public top-level or static variable read (`ref.watch(fooProvider)`,
         // `Xsd.xdouble`) never binds and every such variable reads as
         // unreferenced: 18 of 25 Dart items in the back-test before this rule.
-        // Lift this once the adapter extracts those reads (sutra/497).
-        && !(sym.language == "dart" && matches!(sym.kind.as_str(), "const" | "static"))
+        // Private (`_`-prefixed) reads are extracted, so those stay reportable.
+        // Lift this once the adapter extracts the public reads (sutra/497).
+        && !(sym.language == "dart"
+            && matches!(sym.kind.as_str(), "const" | "static")
+            && !sym.short_name.starts_with('_'))
 }
 
 /// Unreferenced outside tests, and not test support: a helper whose name says
@@ -127,15 +131,19 @@ fn adapter_for<'r>(registry: &'r LanguageRegistry, path: &str) -> Option<&'r dyn
 /// A reference the diff removed from non-test code: `(name, qualifier)`.
 type RemovedRef = (String, Option<String>);
 
-/// Whether a removed reference could have bound to `sym`: unqualified, or its
-/// qualifier's last segment names `sym`'s type or module file.
-fn qualifier_fits(qualifier: Option<&str>, sym: &SymbolSite) -> bool {
+/// Whether a removed reference could have bound to `sym`: its qualifier's last
+/// segment names `sym`'s type or module file. A reference whose qualifier
+/// picks no type or module (none, `self`, `crate`) fits only when `sym` is the
+/// one definition of its name (`unique`): with no parse of the base tree,
+/// removing `helper()` says nothing about which of two `helper`s it called,
+/// and an already-dead one would be reported as orphaned by this change.
+fn qualifier_fits(qualifier: Option<&str>, sym: &SymbolSite, unique: bool) -> bool {
     let Some(q) = qualifier else {
-        return true;
+        return unique;
     };
     let last = q.rsplit("::").next().unwrap_or(q);
     if matches!(last, "self" | "Self" | "super" | "crate") {
-        return true;
+        return unique;
     }
     let parent = sym
         .qualified_name
@@ -188,6 +196,59 @@ fn index_mismatch(db: &Db, workspace_root: &Path, scope: &DiffScope, path: &str)
     }
 }
 
+/// Why liveness read from the index may not be the reviewed side's, outside
+/// the diff: `index_mismatch` covers the changed files, but the index holds
+/// the whole worktree, so an uncommitted caller elsewhere hides an orphan and
+/// a deleted one invents one. Only a staged or HEAD review can differ; an
+/// unstaged review is the worktree.
+fn dirty_outside_diff(
+    db: &Db,
+    workspace_root: &Path,
+    scope: &DiffScope,
+    registry: &LanguageRegistry,
+) -> Result<Option<String>> {
+    let Some(head) = scope.head_revision.as_deref() else {
+        return Ok(None);
+    };
+    let in_diff: HashSet<&str> = scope
+        .entries
+        .iter()
+        .flat_map(|e| [e.path.as_str(), e.base_path()])
+        .collect();
+    let changed = git::git_diff_entries_to_worktree(workspace_root, head)?;
+    let untracked = git::untracked_files(workspace_root)?;
+    let mut dirty = BTreeSet::new();
+    for path in changed
+        .iter()
+        .flat_map(|e| [e.path.as_str(), e.base_path()])
+        .chain(untracked.iter().map(String::as_str))
+    {
+        if in_diff.contains(path) || dirty.contains(path) {
+            continue;
+        }
+        if let Some(adapter) = adapter_for(registry, path)
+            && db.indexes_language(adapter.language_id())?
+        {
+            dirty.insert(path);
+        }
+    }
+    if dirty.is_empty() {
+        return Ok(None);
+    }
+    const SHOWN: usize = 5;
+    let mut listed: Vec<&str> = dirty.iter().copied().take(SHOWN).collect();
+    let more = dirty.len().saturating_sub(SHOWN);
+    let tail = format!("(+{more} more)");
+    if more > 0 {
+        listed.push(&tail);
+    }
+    Ok(Some(format!(
+        "{} indexed file(s) outside the diff differ in the worktree from the reviewed side: {}",
+        dirty.len(),
+        listed.join(", ")
+    )))
+}
+
 /// Find the orphans of `scope`. [`run_advisory`] first checks that the index
 /// can stand for the reviewed side.
 pub fn analyze(
@@ -204,6 +265,9 @@ pub fn analyze(
     )?;
     let mut pool = ParserPool::new(std::time::Duration::from_secs(5));
     let mut report = OrphanReport::default();
+    report
+        .incomplete
+        .extend(dirty_outside_diff(db, workspace_root, scope, registry)?);
     let (mut unmatched_old, mut unmatched_new) = (Vec::new(), Vec::new());
     let mut removed: Vec<RemovedRef> = Vec::new();
 
@@ -301,11 +365,18 @@ pub fn analyze(
             .push(qualifier.as_deref());
     }
     for (name, qualifiers) in by_name {
-        for sym in db.symbols_named(name)? {
+        let candidates = db.symbols_named(name)?;
+        // Twins (same file and qualified name) are one definition.
+        let definitions: HashSet<(&str, &str)> = candidates
+            .iter()
+            .map(|s| (s.path.as_str(), s.qualified_name.as_str()))
+            .collect();
+        let unique = definitions.len() == 1;
+        for sym in candidates {
             if added_ids.contains(&sym.id)
                 || reported.contains(&sym.id)
                 || !reportable(&sym, &is_test_path)
-                || !qualifiers.iter().any(|q| qualifier_fits(*q, &sym))
+                || !qualifiers.iter().any(|q| qualifier_fits(*q, &sym, unique))
             {
                 continue;
             }
@@ -550,17 +621,25 @@ mod tests {
     #[test]
     fn qualifier_names_the_type_or_the_module_file() {
         let method = site("Telemetry::start", "src/ai_metrics.rs");
-        assert!(qualifier_fits(None, &method));
-        assert!(qualifier_fits(Some("Telemetry"), &method));
+        assert!(qualifier_fits(Some("Telemetry"), &method, false));
         assert!(qualifier_fits(
             Some("crate::ai_metrics::Telemetry"),
-            &method
+            &method,
+            false
         ));
-        assert!(qualifier_fits(Some("Self"), &method));
-        assert!(!qualifier_fits(Some("Pricing"), &method));
+        assert!(!qualifier_fits(Some("Pricing"), &method, true));
         let free = site("handle", "src/tools/dead.rs");
-        assert!(qualifier_fits(Some("tools::dead"), &free));
-        assert!(!qualifier_fits(Some("tools::resolve"), &free));
+        assert!(qualifier_fits(Some("tools::dead"), &free, false));
+        assert!(!qualifier_fits(Some("tools::resolve"), &free, true));
+    }
+
+    #[test]
+    fn an_unscoped_qualifier_fits_only_the_one_definition() {
+        let method = site("Telemetry::start", "src/ai_metrics.rs");
+        for q in [None, Some("Self"), Some("crate"), Some("self")] {
+            assert!(qualifier_fits(q, &method, true), "{q:?}");
+            assert!(!qualifier_fits(q, &method, false), "{q:?}");
+        }
     }
 
     #[test]

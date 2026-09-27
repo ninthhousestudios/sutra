@@ -832,6 +832,27 @@ pub fn snapshot_files(workspace_root: &Path, revision: &str) -> Result<Vec<Strin
     Ok(paths)
 }
 
+/// Untracked files the workspace walker would index: not in the git index and
+/// not ignored.
+pub fn untracked_files(workspace_root: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["-c", "core.quotePath=false"])
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git ls-files failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git ls-files: {stderr}")));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// Reads many files from one snapshot through a single `git cat-file --batch`
 /// process: `""` is the index, anything else a revision.
 pub struct SnapshotReader {
