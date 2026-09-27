@@ -1,0 +1,24 @@
+/home/josh/soft/manas/sutra	666ec23	250	5d-7: add constraint orient tests + clippy fixes
+/home/josh/soft/manas/sutra	c2f28a5	54	feat: stop extracting Other refs across all language parsers (sutra/194)
+/home/josh/soft/manas/sutra	d5420db	270	feat: smriti event reader with cursor persistence
+/home/josh/soft/manas/sutra	9b17b5c	59	add constraints::check types for unified evaluation
+/home/josh/soft/manas/sutra	83a1b64	153	5b-3: staleness detection + lazy recompute trigger
+/home/josh/soft/manas/sutra	3ec7483	164	refactor: add tools::change_signals module with unified gather()
+/home/josh/soft/manas/sutra	3e2770b	244	feat(freshness): refresh before answering — incremental reparse on the query path (sutra/3
+/home/josh/soft/manas/sutra	bb3e3f3	171	test: scope arena + resolver hint tests (sutra/230)
+/home/josh/nhs/soft/astrology/swe_dashboard	6452e9b	176	Add distance units and unit vectors to all three body tabs
+/home/josh/nhs/soft/astrology/swe_dashboard	6abbf37	114	Load web ephemeris files progressively, not before first frame
+/home/josh/nhs/soft/astrology/swe_dashboard	cfe4d77	1232	Remove the Call Trace subsystem
+/home/josh/nhs/soft/astrology/swe_dashboard	71b3127	405	ephemeris manager: fix Moshier indicator, review patches, curl downloader
+/home/josh/nhs/soft/astrology/swe_dashboard	0811382	86	Planets: show geocentric Earth as the anti-Sun point under Human Design
+/home/josh/nhs/soft/astrology/swe_dashboard	d2e3e5d	350	Persist Context and Flag fields from one declarative list (swe-dashboard/86)
+/home/josh/nhs/soft/astrology/swe_dashboard	a782481	258	Split coordinates into per-card providers for reactive results
+/home/josh/nhs/soft/astrology/swe_dashboard	4645a03	530	add TracingSwissEph wrapper with explicit forwarding for all methods
+/home/josh/adityas/backend	f6803e9	32	backend: build fragment-stitch report harness + seed sahajanya moon report (adityas/report
+/home/josh/adityas/backend	ff8d03b	101	backend: extract CORS builder into testable server::cors + regression test
+/home/josh/adityas/backend	dd23961	399	backend: wire knowledge tools into durable TurnEngine tool-loop (adityas/ai/22)
+/home/josh/adityas/backend	1833a10	75	chat: reference-gate insert_message + bind data key to conversation (adityas/ai/54)
+/home/josh/adityas/backend	f9ee1f8	33	integrate Sentry for error and performance monitoring
+/home/josh/adityas/backend	c0e1e88	44	Add GEMINI_TEST_ALLOWLIST to gate Gemini separately from the shop
+/home/josh/adityas/backend	7c21ace	1072	backend: conversation compaction + length cap (I27, adityas/ai/27)
+/home/josh/adityas/backend	ff19856	46	deploy: guard against shipping a binary ahead of applied DB migrations (adityas/backend/61

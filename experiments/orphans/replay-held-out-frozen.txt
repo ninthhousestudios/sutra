@@ -1,0 +1,42 @@
+# sample sutra 4f71177: 0 items 
+# sample sutra 092e36a: 0 items 
+# sample sutra 06de2b6: 3 items 
+  [added] src/db/similarity.rs:142	Db::pattern_family_count	test_refs=0
+  [added] src/db/similarity.rs:149	Db::query_pattern_families	test_refs=0
+  [added] src/similarity/mod.rs:89	compute_pattern_families	test_refs=0
+# sample sutra 64e6991: 0 items 
+# sample sutra d7d064d: 0 items 
+# sample sutra 66de3a3: 0 items 
+# sample sutra 79ade35: 0 items 
+# sample sutra 6576c69: 0 items 
+# sample swe-dashboard ee3c419: 0 items 
+# sample swe-dashboard 0576cd5: 2 items 
+  [orphaned] lib/core/calculation/run_tab_calc.dart:67	runTabCalcSeries	test_refs=0
+  [orphaned] lib/core/calculation/run_tab_calc.dart:82	runTabCalcSeriesWithOverrides	test_refs=0
+# sample swe-dashboard de1ca59: 2 items 
+  [added] lib/tabs/ayanamsa/ayanamsa_provider.dart:110	ayanamsaToExportRows	test_refs=0
+  [added] lib/tabs/planets/planets_provider.dart:162	planetsToExportRows	test_refs=0
+# sample swe-dashboard cd86c7c: 0 items 
+# sample swe-dashboard ebd9dc1: 0 items 
+# sample swe-dashboard d6631f7: 0 items 
+# sample swe-dashboard eb2a2bc: 0 items 
+# sample swe-dashboard 6be561a: 0 items 
+# sample backend e0d9634: 0 items 
+# sample backend 2ca9882: 0 items 
+# sample backend 399d2f5: 0 items 
+# sample backend 20f8639: 0 items 
+# sample backend 3460c9f: 7 items 
+  [added] chat-store/src/enums.rs:12	UnknownVariant	test_refs=0
+  [added] chat-store/src/rows.rs:18	Conversation	test_refs=0
+  [added] chat-store/src/rows.rs:42	Generation	test_refs=0
+  [added] chat-store/src/rows.rs:57	Message	test_refs=0
+  [added] chat-store/src/rows.rs:76	UsageEntry	test_refs=0
+  [added] chat-store/src/rows.rs:98	ConversationKey	test_refs=0
+  [added] chat-store/src/rows.rs:112	Consent	test_refs=0
+# sample backend e77727a: 3 items 
+  [added] server/src/naming.rs:66	sign_for_aditya	test_refs=1
+  [added] server/src/naming.rs:76	body_for_name	test_refs=1
+  [added] server/src/naming.rs:94	being_type_for_name	test_refs=1
+# sample backend c6acd9e: 0 items 
+# sample backend 312aec9: 0 items 
+sample: 24 commits, 17 items, 5 commits with an item

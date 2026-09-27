@@ -44,7 +44,7 @@ each classified by the mechanism that made it possible.
 | **PAR** (rewrite subtype) | A fix changes a pattern at 1 of N sites; the rest survive | "You fixed 1 of N": list the surviving instances of a pattern the diff rewrote or wrapped | review, advisory | 4/4 known diffs, 29/31 ordinary commits silent ([sibling-pattern-backtest.md](sibling-pattern-backtest.md)) | sutra/467 |
 | **DUP** | Logic re-implemented instead of reused; the copies drift | "This already exists": new functions vs the repo and vs the rest of the change (embed + lexical + rare shared token runs), grouped by file pair | review, advisory | 7/9 reachable introductions; fires on 42% of added functions, 20% of them real duplicates ([dup-exists-backtest.md](dup-exists-backtest.md)) | sutra/469 |
 | **SWALLOW** | `.ok()`, `let _ =`, `catch (_)`: a failure reads as valid data | Swallowed-error ratchet: tier A blocks unless the site carries `// swallow: <reason>`; tier B is advisory | guard (A), review (B) | 14/14 lexical-idiom bugs; tier A 18/19 held-out sites real discards, 0.5 sites/commit ([swallow-ratchet-backtest.md](swallow-ratchet-backtest.md)) | sutra/472 (engine), sutra/486 (review, rules, tier A on) |
-| **UNWIRED** | Built ahead of its call site, never connected | Orphans: symbols the diff adds that nothing references | review, advisory | not yet run; the back-test is the first step of the build | sutra/483 |
+| **UNWIRED** | Built ahead of its call site, never connected | Orphans: symbols the diff adds that nothing outside tests references (`added`), and symbols it strands by removing their last such reference (`orphaned`) | review, advisory | 3/3 reachable incidents (2 of them `orphaned`); held-out 13 items on 3 of 24 commits after a Dart parser fix, 9 of them staged ([orphans-backtest.md](orphans-backtest.md)) | sutra/483 |
 
 Build order (encoded as yojana dependencies):
 
@@ -118,6 +118,10 @@ follows these or gives a reason.
    rules (the SWALLOW ratchet among them) record as mechanism
    `forbidden_pattern`, kind = rule name: review and check hits on added
    lines, and guard blocks (surface `guard`, one event per proposed edit).
+   The orphans advisory records as mechanism `orphan`, kind `added` or
+   `orphaned`, keyed by qualified name, at the declaration line: deleting the
+   symbol reads `changed`, wiring it up reads `present`, so its acted-on rate
+   needs liveness at HEAD rather than the line proxy (sutra/483).
 
 ## What sutra is today
 
@@ -127,9 +131,9 @@ follows these or gives a reason.
 | Navigation | `sutra_explore`, `sutra_lookup`, `sutra_symbol`, `sutra_outline`, `sutra_map`, `sutra_context`, `sutra_refs`, `sutra_calls`, `sutra_trace`, `sutra_deps`, `sutra_impact` | Read side |
 | Freshness | Content-based staleness; refresh before answering ([freshness-map.md](freshness-map.md)) | Every answer carries `as_of`/`is_stale` |
 | Constraints and guard | `.sutra/rules.toml` (forbidden deps, cycles, fan-in, forbidden_patterns), DD engine, `sutra-guard` edit hook, `sutra check`, `sutra_constraints` ([constraints-map.md](constraints-map.md)) | Write side, blocking. Home of the SWALLOW ratchet |
-| Review | `sutra_review`, `sutra_diff_impact`, `sutra_pr_risk`, `sutra_commit_manifest` | Write side, advisory. Home of the PAR (`sibling_patterns`, sutra/467), DUP and orphans mechanisms. `behavioral_coupling` lists co-change partners with no static edge |
+| Review | `sutra_review`, `sutra_diff_impact`, `sutra_pr_risk`, `sutra_commit_manifest` | Write side, advisory. Home of the PAR (`sibling_patterns`, sutra/467), orphans (`orphans`, sutra/483) and DUP mechanisms. `behavioral_coupling` lists co-change partners with no static edge |
 | Similarity | HRR vectors (embed, strip), lexical tokens, `sutra_similar` ([similarity-map.md](similarity-map.md)) | Substrate for the DUP mechanism. Strip mode is not a duplicate detector (sutra/484) |
-| Dead code | `sutra_dead` | Substrate for the orphans mechanism (resolution corrected in sutra/477) |
+| Dead code | `sutra_dead` | Substrate for the orphans mechanism (resolution corrected in sutra/477; liveness rules in `db::orphans`, sutra/483) |
 | Git signals | `sutra_cochange`, `sutra_hotspots`, per-symbol cyclomatic/cognitive complexity | Review inputs; hotspots were the one health-era signal that was right on all 4 pilot repos |
 | Components | Directory-based clustering, `sutra_components` | Boundary constraints and explore ranking |
 | Conventions | FCA detection, `sutra_conventions` (list only) | Descriptive. In-loop consumers were removed after live use showed high false positives (sutra/312, 313) |

@@ -1,0 +1,30 @@
+sample	repo	commit	kind	symbol	label	note
+tuning	sutra	d5420db	added	SmritiReader::open	STAGED	wired in 517451e, same day
+tuning	sutra	d5420db	added	SmritiReader::read_cursor	STAGED	wired in 517451e, same day
+tuning	sutra	d5420db	added	SmritiReader::write_cursor	STAGED	wired in 517451e, same day
+tuning	sutra	d5420db	added	SmritiReader::events_since	STAGED	wired in 517451e, same day
+tuning	sutra	9b17b5c	added	CheckOutcome	STAGED	wired in 7d64ee5, same day
+tuning	sutra	9b17b5c	added	EvalScope	STAGED	wired in 7d64ee5, same day
+tuning	sutra	9b17b5c	added	FactsSource	STAGED	wired in 7d64ee5, same day
+tuning	sutra	3ec7483	added	gather	STAGED	wired in 8535dc5, same day
+tuning	swe_dashboard	a782481	orphaned	TracingSwissEph::entries	FP	runner.dart reads _tracing.entries; the Dart resolver does not bind a getter through a private field's type, and the diff removed an unrelated `.entries`
+tuning	swe_dashboard	4645a03	added	TracingSwissEph::entries	STAGED	wired in 1dbcddf, 9 minutes later (that reader then stays unbound, see a782481)
+tuning	swe_dashboard	4645a03	added	TracingSwissEph::setTabTag	STAGED	wired in 1dbcddf, 9 minutes later
+tuning	swe_dashboard	4645a03	added	TracingSwissEph::clearEntries	STAGED	wired in 1dbcddf, 9 minutes later
+held-out	sutra	06de2b6	added	Db::pattern_family_count	STAGED	wired in 33f9895, same day
+held-out	sutra	06de2b6	added	Db::query_pattern_families	REAL	never wired; deleted as dead pub API in 884dfde (sutra/481), 4 months later
+held-out	sutra	06de2b6	added	compute_pattern_families	STAGED	wired in 33f9895, same day
+held-out-frozen	swe_dashboard	0576cd5	orphaned	runTabCalcSeries	FP	called as `(settings) => runTabCalcSeries(...)`; tree-sitter-dart misparses a call as an arrow body (fixed 1c62d8c)
+held-out-frozen	swe_dashboard	0576cd5	orphaned	runTabCalcSeriesWithOverrides	FP	same misparse (fixed 1c62d8c)
+held-out-frozen	swe_dashboard	de1ca59	added	ayanamsaToExportRows	FP	called as `getRows: () => ayanamsaToExportRows(...)`; same misparse (fixed 1c62d8c)
+held-out-frozen	swe_dashboard	de1ca59	added	planetsToExportRows	FP	same misparse (fixed 1c62d8c)
+held-out	backend	3460c9f	added	UnknownVariant	STAGED	chat-store crate wired into server in 886c8bb, same day
+held-out	backend	3460c9f	added	Conversation	STAGED	wired in 886c8bb, same day
+held-out	backend	3460c9f	added	Generation	STAGED	wired in 886c8bb, same day
+held-out	backend	3460c9f	added	Message	STAGED	wired in 886c8bb, same day
+held-out	backend	3460c9f	added	UsageEntry	STAGED	wired in 886c8bb, same day
+held-out	backend	3460c9f	added	ConversationKey	STAGED	wired in 886c8bb, same day
+held-out	backend	3460c9f	added	Consent	STAGED	wired in 886c8bb, same day
+held-out	backend	e77727a	added	sign_for_aditya	ACC	production reverse lookup only the eval harness (tests/eval_harness.rs) calls; test support not named as such
+held-out	backend	e77727a	added	body_for_name	ACC	same
+held-out	backend	e77727a	added	being_type_for_name	ACC	same

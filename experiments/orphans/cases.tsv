@@ -1,0 +1,12 @@
+case	role	repo_path	commit	symbol	note
+sutra/297	intro	/home/josh/soft/manas/sutra	928f611baca7	invalidate	added with inert callers in daemon.rs
+sutra/297	orphaning	/home/josh/soft/manas/sutra	b9afe94	invalidate	daemon.rs deleted: last callers gone
+sutra/297	orphaning	/home/josh/soft/manas/sutra	bcca99d	invalidate	sutra_add_root -> sutra_workspace drops the live call
+adityas/ai/110	intro	/home/josh/adityas/backend	514e86680d31	Telemetry,TurnMetrics	called from the preview route at birth
+adityas/ai/110	orphaning	/home/josh/adityas/backend	348d4c9	Telemetry,TurnMetrics	routes/ai.rs deleted: last caller gone
+arjuna/arrow/24	intro	/home/josh/nhs/soft/astrology/arjuna	741116365b42	canonicalConfig	zero callers from birth
+vidya/39	intro	/home/josh/soft/manas/vidya	4d3408bbf6c5	load_synonyms	wired from birth; bug is a persistence gap
+adityas/ai/65	-	-	-	-	cross-repo: client never sends CreateTurnRequest.chart
+adityas/ai/69	-	-	-	-	field: Stripe subscription metadata written, never read
+adityas/ai/82	-	-	-	-	non-code: tool named in prompt and KNOWN_TOOLS, never declared
+adityas/explore/47	-	-	-	-	non-code: the trigger was never built

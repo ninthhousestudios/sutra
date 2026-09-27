@@ -1,0 +1,24 @@
+/home/josh/soft/manas/sutra	4f71177	32	refactor: extract is_workspace_stale to deduplicate staleness check
+/home/josh/soft/manas/sutra	092e36a	1399	feat: TypeScript extension layer — symbols, refs, imports (sutra/267)
+/home/josh/soft/manas/sutra	06de2b6	294	feat: pattern family clustering + DB layer (sutra/90, wave 1)
+/home/josh/soft/manas/sutra	64e6991	119	feat(parser/python): emit inheritance refs for class base classes
+/home/josh/soft/manas/sutra	d7d064d	57	refactor(parser): drop symbols.max_nesting and max_nesting_depth (sutra/474)
+/home/josh/soft/manas/sutra	66de3a3	62	refactor: wire review.rs to change_signals::gather, delete dead helpers
+/home/josh/soft/manas/sutra	79ade35	34	feat: narrow @override dead-code suppression to lifecycle methods (sutra/124)
+/home/josh/soft/manas/sutra	6576c69	139	feat: wire parent_symbol_id + file_id through resolution pipeline (sutra/254)
+/home/josh/nhs/soft/astrology/swe_dashboard	ee3c419	262	Series grid: surface per-body error string instead of NaN cells (swe-dashboard/71)
+/home/josh/nhs/soft/astrology/swe_dashboard	0576cd5	121	Series wiring into the kernel; SeriesView owns the Moment label
+/home/josh/nhs/soft/astrology/swe_dashboard	de1ca59	564	Phase 5: Export system + UI polish
+/home/josh/nhs/soft/astrology/swe_dashboard	cd86c7c	131	Migrate rise_set onto the Calculation kernel
+/home/josh/nhs/soft/astrology/swe_dashboard	ebd9dc1	266	Phenomena: support all SwissEph bodies (asteroids, comets, Uranians)
+/home/josh/nhs/soft/astrology/swe_dashboard	d6631f7	79	Occultations: use prebuilt StarSearchField for star target (swe-dashboard/42)
+/home/josh/nhs/soft/astrology/swe_dashboard	eb2a2bc	43	Export: real save dialog on Linux, fix silent macOS save
+/home/josh/nhs/soft/astrology/swe_dashboard	6be561a	91	Add True Sidereal (Vondrák 2011) as a built-in SE_SIDM_USER preset
+/home/josh/adityas/backend	e0d9634	38	reports: first design pass — immersive scenes, split openers, interspersed reflections (ad
+/home/josh/adityas/backend	2ca9882	35	Add hora-fallback Aditya-derivation test to chart_facts (adityas/ai/34 review)
+/home/josh/adityas/backend	399d2f5	66	Seam route stubs: /v1 route map, per-class middleware, 501s (adityas/backend/6)
+/home/josh/adityas/backend	20f8639	52	backend: enforce tool-less contract + fix budget estimate on final synthesis round (aditya
+/home/josh/adityas/backend	3460c9f	408	Chat schema + chat-store crate + migration/GRANTs (adityas/ai/7)
+/home/josh/adityas/backend	e77727a	61	backend: eval harness chart fixtures reproduce production ChartFacts (adityas/ai/158)
+/home/josh/adityas/backend	c6acd9e	37	Authenticate VidyaClient to vidya /query with a bearer token
+/home/josh/adityas/backend	312aec9	42	backend: close two ai/87 review findings — shred-blocks-turns, updated_at meaning
