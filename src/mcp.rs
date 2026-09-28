@@ -1098,13 +1098,7 @@ impl SutraServer {
             (ctx, result)
         })
         .await
-        .map_err(|e| {
-            ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
-                format!("similar task panicked: {e}"),
-                None,
-            )
-        })?;
+        .map_err(|e| task_panicked("similar", e))?;
         to_compact_json(ctx.wrap(result.map_err(sutra_to_rmcp)?))
     }
 
@@ -1205,13 +1199,7 @@ impl SutraServer {
                     tools::parse::handle(&entry, &db_bg, &config, &cancel, &registry)
                 })
                 .await
-                .map_err(|e| {
-                    ErrorData::new(
-                        rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
-                        format!("parse task panicked: {e}"),
-                        None,
-                    )
-                })?
+                .map_err(|e| task_panicked("parse", e))?
                 .map_err(sutra_to_rmcp)?;
                 self.wrap_response(&db, &ws_root, result)
             }
@@ -1281,6 +1269,15 @@ fn sutra_to_rmcp(e: SutraError) -> ErrorData {
         rmcp::model::ErrorCode(e.code()),
         e.message(),
         Some(serde_json::to_value(data).unwrap_or_default()),
+    )
+}
+
+/// A blocking task that panicked, as an internal error.
+fn task_panicked(task: &str, e: tokio::task::JoinError) -> ErrorData {
+    ErrorData::new(
+        rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
+        format!("{task} task panicked: {e}"),
+        None,
     )
 }
 
