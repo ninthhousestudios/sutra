@@ -41,6 +41,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::json;
+use tree_sitter::{Point, Tree};
 
 use crate::db::firings::{FiringContext, FiringRecord};
 use crate::db::{CorpusFunction, Db, RefRow};
@@ -186,8 +187,8 @@ const KEYWORDS: &[&str] = &[
 ];
 
 /// Drop the signature so a shared name or parameter list does not dominate:
-/// the body starts at the first `{` or `=>`. A body with neither (Python) is
-/// kept whole.
+/// the body starts at the first `{` or `=>`. A language with neither reads
+/// the body from the parse tree instead ([`TREE_BODY_LANGUAGES`]).
 fn body_only(text: &str) -> &str {
     let cut = [text.find('{'), text.find("=>")]
         .into_iter()
@@ -195,6 +196,63 @@ fn body_only(text: &str) -> &str {
         .min()
         .unwrap_or(0);
     &text[cut..]
+}
+
+/// Languages whose function bodies have no `{` or `=>` for [`body_only`] to
+/// cut at: Python's def line, parameters and decorators would stay in the
+/// lexical channels (sutra/506).
+const TREE_BODY_LANGUAGES: &[&str] = &["python"];
+
+/// Per syntax node with a `body` field: its first and last row and where the
+/// body starts (rows 0-based).
+type BodySpans = Vec<(usize, usize, Point)>;
+
+fn body_spans(tree: &Tree) -> BodySpans {
+    let mut spans = Vec::new();
+    let mut cursor = tree.walk();
+    loop {
+        let node = cursor.node();
+        if let Some(body) = node.child_by_field_name("body") {
+            spans.push((
+                node.start_position().row,
+                node.end_position().row,
+                body.start_position(),
+            ));
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return spans;
+            }
+        }
+    }
+}
+
+/// The byte offset in `text`, a function's lines `start..=end` (1-based),
+/// where its body starts: the body of the outermost node within the span
+/// that ends on its last line, so neither a decorator line nor a nested
+/// function's body is taken for it. No such node keeps the text whole.
+fn tree_body_start(spans: &[(usize, usize, Point)], text: &str, start: usize, end: usize) -> usize {
+    let Some(&(_, _, body)) = spans
+        .iter()
+        .filter(|(first, last, _)| first + 1 >= start && last + 1 == end)
+        .min_by_key(|(first, _, _)| *first)
+    else {
+        return 0;
+    };
+    let offset = text
+        .split('\n')
+        .take(body.row + 1 - start)
+        .map(|l| l.len() + 1)
+        .sum::<usize>()
+        + body.column;
+    if text.is_char_boundary(offset) {
+        offset
+    } else {
+        0
+    }
 }
 
 fn subtokens(text: &str) -> impl Iterator<Item = String> + '_ {
@@ -272,6 +330,9 @@ struct Doc<'c> {
     function: usize,
     f: &'c CorpusFunction,
     text: String,
+    /// Byte offset of the body in `text`: the signature is dropped from the
+    /// lexical channels.
+    body: usize,
     /// Sorted, deduplicated shingle hashes of the body.
     shingles: Vec<u64>,
     /// Normalized tf-idf weights by term id.
@@ -284,6 +345,10 @@ type SymbolKey<'a> = (&'a str, &'a str, &'a str);
 impl Doc<'_> {
     fn key(&self) -> SymbolKey<'_> {
         (&self.f.hrr.file_path, &self.f.qualified_name, &self.f.kind)
+    }
+
+    fn body(&self) -> &str {
+        &self.text[self.body..]
     }
 }
 
@@ -302,9 +367,10 @@ struct Lexicon {
 }
 
 impl Lexicon {
-    fn count(&mut self, text: &str) -> HashMap<usize, u32> {
+    /// Count the terms of a document's body.
+    fn count(&mut self, body: &str) -> HashMap<usize, u32> {
         let mut counts = HashMap::new();
-        for t in subtokens(body_only(text)) {
+        for t in subtokens(body) {
             let next = self.terms.len();
             let id = *self.terms.entry(t).or_insert(next);
             if id == self.term_df.len() {
@@ -587,7 +653,7 @@ fn collect_units<'d>(
             units.push(Unit {
                 doc: i,
                 kind: UnitKind::Added,
-                text: body_only(&docs[i].text).to_string(),
+                text: docs[i].body().to_string(),
                 lines: (to_line(f.hrr.start_line)..=to_line(f.hrr.end_line)).collect(),
                 site_line: f.hrr.start_line,
             });
@@ -673,7 +739,8 @@ fn score(
             || adapter_for(registry, &f.hrr.file_path)
                 .is_some_and(|a| a.is_test_path(&f.hrr.file_path))
     };
-    let mut sources: HashMap<&str, Option<String>> = HashMap::new();
+    let mut pool = ParserPool::new(std::time::Duration::from_secs(5));
+    let mut sources: HashMap<&str, Option<(String, Option<BodySpans>)>> = HashMap::new();
     let mut lexicon = Lexicon::default();
     let mut docs: Vec<Doc<'_>> = Vec::new();
     let mut counts: Vec<HashMap<usize, u32>> = Vec::new();
@@ -685,24 +752,45 @@ fn score(
         let path = f.hrr.file_path.as_str();
         let source = sources.entry(path).or_insert_with(|| {
             match std::fs::read_to_string(workspace_root.join(path)) {
-                Ok(s) => Some(s),
+                Ok(s) => {
+                    let adapter = adapter_for(registry, path)
+                        .filter(|a| TREE_BODY_LANGUAGES.contains(&a.language_id()));
+                    let spans = match adapter.map(|a| pool.tree(a, &s)) {
+                        Some(Ok(tree)) => Some(body_spans(&tree)),
+                        // The signature stays in its functions' lexical
+                        // channels, which dilutes their scores.
+                        Some(Err(e)) => {
+                            report.incomplete.push(format!(
+                                "{path}: {e}, so its functions were scored with their signatures"
+                            ));
+                            None
+                        }
+                        None => None,
+                    };
+                    Some((s, spans))
+                }
                 Err(e) => {
                     report.incomplete.push(format!("{path}: {e}"));
                     None
                 }
             }
         });
-        let Some(source) = source else {
+        let Some((source, spans)) = source else {
             continue;
         };
         let text = span_text(source, start, end);
-        let shingles = Shingled::new(body_only(&text)).set();
+        let body = match spans {
+            Some(spans) => tree_body_start(spans, &text, start, end),
+            None => text.len() - body_only(&text).len(),
+        };
+        let shingles = Shingled::new(&text[body..]).set();
         lexicon.add_shingles(docs.len(), &shingles);
-        counts.push(lexicon.count(&text));
+        counts.push(lexicon.count(&text[body..]));
         docs.push(Doc {
             function,
             f,
             text,
+            body,
             shingles,
             lex: Vec::new(),
             embed: None,
@@ -1206,6 +1294,48 @@ mod tests {
             body_only("def f(a):\n    return a"),
             "def f(a):\n    return a"
         );
+    }
+
+    /// A Python function renamed, re-parameterized, decorated and moved into
+    /// a class scores the same body: the tree, not the text, finds where the
+    /// signature ends (sutra/506).
+    #[test]
+    fn a_python_body_is_read_from_the_tree_without_its_signature() {
+        let source = "\
+def load_rows(conn):
+    rows = conn.execute(\"SELECT id FROM rows\")
+    kept = {r.id: r for r in rows if r.score > 10}
+    return kept
+
+
+class Store:
+    @cached(ttl=60)
+    async def fetch_all(
+        self, db: Db, *, cutoff: int = 3
+    ) -> dict:
+        rows = conn.execute(\"SELECT id FROM rows\")
+        kept = {r.id: r for r in rows if r.score > 10}
+        return kept
+";
+        let registry = crate::parser::adapter::default_registry();
+        let adapter = registry
+            .adapter_for_language("python")
+            .expect("invariant: python is registered");
+        let tree = ParserPool::new(std::time::Duration::from_secs(5))
+            .tree(adapter, source)
+            .expect("invariant: the fixture parses");
+        let spans = body_spans(&tree);
+        let body = |start: usize, end: usize| {
+            let text = span_text(source, start, end);
+            let at = tree_body_start(&spans, &text, start, end);
+            text[at..].to_string()
+        };
+        let (plain, method) = (body(1, 4), body(8, 14));
+        assert!(plain.starts_with("rows = "), "{plain:?}");
+        assert!(method.starts_with("rows = "), "{method:?}");
+        let terms = |b: &str| subtokens(b).collect::<Vec<_>>();
+        assert_eq!(terms(&plain), terms(&method));
+        assert_eq!(Shingled::new(&plain).set(), Shingled::new(&method).set());
     }
 
     #[test]

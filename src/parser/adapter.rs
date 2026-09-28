@@ -55,12 +55,8 @@ impl ParserPool {
         Ok((result, literals))
     }
 
-    fn parse_tree(
-        &mut self,
-        adapter: &dyn LanguageAdapter,
-        source: &str,
-        file_path: &str,
-    ) -> Result<(Tree, ParseResult)> {
+    /// The syntax tree alone, without the adapter's symbol extraction.
+    pub fn tree(&mut self, adapter: &dyn LanguageAdapter, source: &str) -> Result<Tree> {
         let lang_id = adapter.language_id();
         let parser = match self.parsers.entry(lang_id.to_string()) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
@@ -76,10 +72,18 @@ impl ParserPool {
             }
         };
 
-        let tree = parser.parse(source, None).ok_or_else(|| {
+        parser.parse(source, None).ok_or_else(|| {
             SutraError::Parse("tree-sitter parse timed out or returned no tree".into())
-        })?;
+        })
+    }
 
+    fn parse_tree(
+        &mut self,
+        adapter: &dyn LanguageAdapter,
+        source: &str,
+        file_path: &str,
+    ) -> Result<(Tree, ParseResult)> {
+        let tree = self.tree(adapter, source)?;
         let ctx = ParseContext {
             source: source.as_bytes(),
             tree: &tree,

@@ -359,7 +359,10 @@ each commit in a scratch worktree under an isolated HOME.
 **What differs from the prototype, and why:**
 
 - **The corpus is the index: the post-change tree.** A moved or deleted match
-  is absent, so `gone` needs no code. Added code is compared with the other
+  is absent, so `gone` needs no code, with one exception: the index holds
+  the worktree, so a file the reviewed side deleted but the worktree still
+  has (a staged deletion recreated) is dropped from the corpus by path
+  (sutra/506). Added code is compared with the other
   code the same change added or edited (sutra/456, 438, ai/197). A pair of
   new copies is reported once. Each pair carries `same_change`.
 - **Units come from `classify_symbols` + `resolve_renames`.** A function is
@@ -440,4 +443,7 @@ comparison; the prototype could not make it.
   are called `build`). The flag does not affect ranks. Snapshots are cached
   under `/tmp/bt463`.
 - **Two languages.** Rust and Dart only. The Python adapter was a *subject*
-  in df8712e, not an indexed language here.
+  in df8712e, not an indexed language here. Python bodies are cut at the
+  parse tree's `body` field, not the first `{`/`=>` (sutra/506); that
+  changes no Rust/Dart score, so the numbers above stand, but Python volume
+  and precision are unmeasured.
