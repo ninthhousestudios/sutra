@@ -11,6 +11,7 @@ pub mod conventions;
 pub mod dead;
 pub mod deps;
 pub mod diff_impact;
+pub mod dup_exists;
 pub mod explore;
 pub mod explore_lexical;
 pub mod find;

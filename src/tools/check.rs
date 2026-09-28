@@ -17,7 +17,7 @@ use crate::constraints::check::DiffHead;
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{ConstraintParseError, Severity};
-use crate::tools::{orphans, review, sibling_pattern};
+use crate::tools::{dup_exists, orphans, review, sibling_pattern};
 use crate::waivers::Waived;
 
 /// Outcome of a `sutra check` run over a diff scope.
@@ -42,6 +42,9 @@ pub struct CheckReport {
     /// The orphans advisory (sutra/483): symbols nothing outside tests
     /// references. Reported, never gating.
     pub orphans: Option<orphans::Advisory>,
+    /// The "this already exists" advisory (sutra/469): added code that
+    /// resembles an existing function. Reported, never gating.
+    pub dup_exists: Option<dup_exists::Advisory>,
     /// Why the constraint findings were not recorded in the firing log, if
     /// they were not (sutra/486). Reported, never gating.
     pub firing_log_error: Option<String>,
@@ -98,6 +101,14 @@ pub fn handle(
         ("check", diff_mode),
         sibling_patterns.patch(),
     );
+    let dup_exists = dup_exists::run_advisory(
+        db,
+        workspace_root,
+        &scope,
+        registry,
+        ("check", diff_mode),
+        sibling_patterns.patch(),
+    );
     let firing_log_error = review::record_constraint_firings(
         db,
         workspace_root,
@@ -127,6 +138,7 @@ pub fn handle(
         scanned_files: changed_paths.len(),
         sibling_patterns: Some(sibling_patterns),
         orphans: Some(orphans),
+        dup_exists: Some(dup_exists),
         firing_log_error,
     })
 }
@@ -239,6 +251,9 @@ pub fn render_human(report: &CheckReport) -> String {
     if let Some(advisory) = &report.orphans {
         advisory.render(&mut out);
     }
+    if let Some(advisory) = &report.dup_exists {
+        advisory.render(&mut out);
+    }
     if let Some(e) = &report.firing_log_error {
         let _ = writeln!(out, "\n(constraint firings not logged: {e})");
     }
@@ -343,6 +358,7 @@ pub fn to_json(report: &CheckReport) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "sibling_patterns": report.sibling_patterns.as_ref().map(sibling_pattern::Advisory::to_json),
         "orphans": report.orphans.as_ref().map(orphans::Advisory::to_json),
+        "dup_exists": report.dup_exists.as_ref().map(dup_exists::Advisory::to_json),
         "constraint_firing_log_error": report.firing_log_error,
     })
 }
@@ -390,6 +406,7 @@ mod tests {
             scanned_files: 3,
             sibling_patterns: None,
             orphans: None,
+            dup_exists: None,
             firing_log_error: None,
         }
     }

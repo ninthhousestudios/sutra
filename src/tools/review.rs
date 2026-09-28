@@ -133,6 +133,15 @@ pub fn handle(
         sibling_patterns.patch(),
     );
 
+    let dup_exists = crate::tools::dup_exists::run_advisory(
+        db,
+        workspace_root,
+        &scope,
+        &registry,
+        ("review", mode),
+        sibling_patterns.patch(),
+    );
+
     let firing_log_error = record_constraint_firings(
         db,
         workspace_root,
@@ -189,6 +198,7 @@ pub fn handle(
         }
         obj.insert("sibling_patterns".into(), sibling_patterns.to_json());
         obj.insert("orphans".into(), orphans.to_json());
+        obj.insert("dup_exists".into(), dup_exists.to_json());
         if let Some(e) = firing_log_error {
             obj.insert("constraint_firing_log_error".into(), json!(e));
         }
