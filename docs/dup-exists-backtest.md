@@ -452,16 +452,17 @@ varuna360-core was skipped: its 25 commits are release-bot squashes, and only
 one passes the sample filter. Reproduce with `prod.py run --repo <path>` and
 `prod.py noise --python -v`. Labels are in
 [`labels-python.tsv`](../experiments/dup-exists/labels-python.tsv). The
-binary was built at 5842976. No run reported `incomplete`, `skipped` or
-`error`.
+binary was built at 1485ad6, after docstrings were cut from the body
+(sutra/509; the first measurement, at 5842976, is noted below). No run
+reported `incomplete`, `skipped` or `error`.
 
 **Volume:**
 
 | Sample | Commits | Units checked | Units fired: added / modified (vs pre-existing) | Groups per review: median / mean / max | Commits with a group |
 |---|---|---|---|---|---|
 | gandiva | 12 | 89 | 43 / 4 | **3.5** / 2.8 / 5 | 9 |
-| qutebrowser | 12 | 33 | 14 / 1 | 1.0 / 1.25 / 4 | 7 |
-| both | 24 | 122 | 57 / 5 (47 / 1) | 2.0 / 2.0 / 5 | 16 |
+| qutebrowser | 12 | 33 | 12 / 1 | 0.5 / 1.1 / 4 | 6 |
+| both | 24 | 122 | 55 / 5 (47 / 1) | 1.5 / 1.9 / 5 | 15 |
 
 **Labels** use the same scheme as the Rust/Dart samples. Each fired unit is
 labelled by the strongest pair reported for it.
@@ -469,13 +470,13 @@ labelled by the strongest pair reported for it.
 | Sample | Fired units | DUP | MIG | FAM | NOISE |
 |---|---|---|---|---|---|
 | gandiva | 47 | 10 (21%) | 14 | 13 | 10 (21%) |
-| qutebrowser | 15 | 2 (13%) | 4 | 4 | 5 (33%) |
-| both | 62 | **12 (19%)** | 18 | 17 | **15 (24%)** |
+| qutebrowser | 13 | 2 (15%) | 4 | 4 | 3 (23%) |
+| both | 60 | **12 (20%)** | 18 | 17 | **13 (22%)** |
 | *Rust/Dart held-out, for comparison* | *40* | *8 (20%)* | *0* | *28* | *4 (10%)* |
 
-**Verdict.** The DUP rate matches Rust/Dart (19% vs 20%). The NOISE rate is
-about 2.4 times higher (24% vs 10%). The volume condition (median ≤ 2 groups
-per review) holds only for the pooled sample, and only just. It fails on the
+**Verdict.** The DUP rate matches Rust/Dart (20% vs 20%). The NOISE rate is
+about 2.2 times higher (22% vs 10%). The volume condition (median ≤ 2 groups
+per review) holds only for the pooled sample. It fails on the
 agent-written corpus (median 3.5). That corpus is also where 10 of the 12
 real duplicates are. Most of gandiva's volume is accurate:
 
@@ -483,20 +484,26 @@ real duplicates are. Most of gandiva's volume is accurate:
 - The two renderers' hit tests and event handlers are copies: 4 DUP items in
   ab52571 and 2 in 28a3d42.
 
-The advisory stays on for Python. Two Python-specific noise sources are worth
-removing before anyone reads the precision number as settled:
+The advisory stays on for Python. Two Python-specific noise sources were
+found:
 
-1. **Docstrings are part of the lexical body.** The tree cut starts at the
-   `body` block, and the docstring is the block's first statement. A Rust
-   doc comment sits before the `{` and is dropped. Two NOISE items fire only
-   on shared docstring text:
+1. **Docstrings were part of the lexical body (fixed, sutra/509).** The tree
+   cut started at the `body` block, and the docstring is the block's first
+   statement. A Rust doc comment sits before the `{` and was already dropped.
+   At 5842976, two NOISE items fired only on shared docstring text:
    - `SqlCompletionModel::data` vs `CompletionModel::flags`: "Override
      QAbstractItemModel::… The QModelIndex to get item flags for".
    - `change_filter::__init__`: "Save decorator arguments. Gets called on
      parse-time…".
 
-   The docstring also inflates `session_delete` (44 runs). Follow-up:
-   sutra/509.
+   Now the body starts after the docstring, and neither item fires. The
+   first measurement was qutebrowser 14 / 1 units, 15 labelled with 5 NOISE;
+   pooled 57 / 5 units, median 2.0 groups, 62 labelled, DUP 19%, NOISE 24%.
+   gandiva is unchanged apart from ±0.01–0.07 lex drift. The docstring was not
+   the main source of `session_delete`'s 44 runs: it still shares 39 with
+   `session_load`. Three new pairs appear on units that already fired
+   (`session_load`/`session_delete` vs `Quitter::quit`/`quickmark_del`), so
+   9b7c2c6a6 has more pairs but no more units.
 2. **Embed scores assignment-only `__init__` bodies near 0.9.** `super().__init__(parent)` plus a list of
    `self.x = …` has the same HRR shape whatever the attributes are. Four
    NOISE items fire on embed 0.74–0.91 with lex ≤ 0.46 and 0 shared runs.
@@ -533,8 +540,13 @@ copying `paste`'s newline-split heuristic, and `paste` kept its own copy.
   under `/tmp/bt463`.
 - **Two languages.** Rust and Dart only. The Python adapter was a *subject*
   in df8712e, not an indexed language here. Python bodies are cut at the
-  parse tree's `body` field, not the first `{`/`=>` (sutra/506); that
-  changes no Rust/Dart score, so the numbers above stand. Python volume
+  parse tree's `body` field, not the first `{`/`=>` (sutra/506), and after
+  any docstring (sutra/509). Neither changes a Rust/Dart score. At 1485ad6,
+  a fresh `prod.py run` gave identical `cases` and `noise --held-out`
+  output. The development sample differs by one pair: sutra 2479d4a adds
+  `refresh ~ post_parse_sequence`, one more added unit (74, was 73). A
+  build of bd3e7aa, before sutra/509, gives the same pair, so the drift is
+  from an earlier change and was hidden by the result cache. Python volume
   and precision are measured separately, on a smaller sample (see "Python").
   There is no Python back-test: none of the pinned DUP introductions are in
   Python, so Python recall is unmeasured.

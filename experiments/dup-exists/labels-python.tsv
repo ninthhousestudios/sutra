@@ -52,12 +52,12 @@ e5340c449	CertificateErrorWrapper::__init__	DUP	vs NetworkManager::on_ssl_errors
 6e1ea89ca	SqlCompletionModel::flags	MIG	copy of CompletionModel::flags; the old model was retired in e3a33ca42
 6e1ea89ca	SqlCompletionModel::__init__	MIG	vs CompletionModel::__init__, same migration
 6e1ea89ca	SqlCompletionModel::new_category	MIG	vs CompletionModel::new_category, same migration
-6e1ea89ca	SqlCompletionModel::data	NOISE	vs CompletionModel::flags: the 6 shared runs are docstring text ("Override QAbstractItemModel::... The QModelIndex to get item flags for")
+6e1ea89ca	SqlCompletionModel::data	NOISE	vs CompletionModel::flags: the 6 shared runs are docstring text ("Override QAbstractItemModel::... The QModelIndex to get item flags for"); no longer fires after sutra/509
 6e1ea89ca	SqlCompletionModel::first_item	FAM	vs last_item (same change): first/last pair
 6e1ea89ca	SqlCompletionModel::last_item	MIG	vs CompletionFilterModel::last_item, same migration
 6e1ea89ca	SqlCompletionModel::index	NOISE	vs parent (same change): Qt model overrides, shape only
-3e3685b68	change_filter::__init__	NOISE	vs prevent_exceptions::__init__: the 8 shared runs are the docstring ("Save decorator arguments. Gets called on parse-time...")
+3e3685b68	change_filter::__init__	NOISE	vs prevent_exceptions::__init__: the 8 shared runs are the docstring ("Save decorator arguments. Gets called on parse-time..."); no longer fires after sutra/509
 fe145b66c	distribution	NOISE	vs HostBlocker::_read_hosts_file: open-and-iterate-lines idiom, combo 0.10
 9b7c2c6a6	session_save	NOISE	vs Quitter::quit: embed 0.69 on a kwargs-heavy signature shape, 0 runs
-9b7c2c6a6	session_delete	FAM	vs session_load (same change): the internal-session `name.startswith('_') and not force` guard; 44 runs, much of it docstring
+9b7c2c6a6	session_delete	FAM	vs session_load (same change): the internal-session `name.startswith('_') and not force` guard; 44 runs, much of it docstring; 39 after sutra/509 dropped the docstring
 9b7c2c6a6	session_load	FAM	vs session_save (same change): sibling commands
