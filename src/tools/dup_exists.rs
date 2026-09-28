@@ -204,8 +204,30 @@ fn body_only(text: &str) -> &str {
 const TREE_BODY_LANGUAGES: &[&str] = &["python"];
 
 /// Per syntax node with a `body` field: its first and last row and where the
-/// body starts (rows 0-based).
+/// body starts, past any docstring (rows 0-based).
 type BodySpans = Vec<(usize, usize, Point)>;
+
+/// Where a body's code starts: after its docstring, a leading statement that
+/// is only a string. Rust and Dart doc comments sit before the body, so
+/// without this Python prose alone could match two functions (sutra/509).
+fn code_start(body: tree_sitter::Node<'_>) -> Point {
+    let mut cursor = body.walk();
+    let mut statements = body.named_children(&mut cursor);
+    let Some(first) = statements.next() else {
+        return body.start_position();
+    };
+    let is_docstring = first.kind() == "expression_statement"
+        && first.named_child_count() == 1
+        && first
+            .named_child(0)
+            .is_some_and(|s| matches!(s.kind(), "string" | "concatenated_string"));
+    if !is_docstring {
+        return body.start_position();
+    }
+    statements
+        .next()
+        .map_or(first.end_position(), |next| next.start_position())
+}
 
 fn body_spans(tree: &Tree) -> BodySpans {
     let mut spans = Vec::new();
@@ -216,7 +238,7 @@ fn body_spans(tree: &Tree) -> BodySpans {
             spans.push((
                 node.start_position().row,
                 node.end_position().row,
-                body.start_position(),
+                code_start(body),
             ));
         }
         if cursor.goto_first_child() {
@@ -1336,6 +1358,50 @@ class Store:
         let terms = |b: &str| subtokens(b).collect::<Vec<_>>();
         assert_eq!(terms(&plain), terms(&method));
         assert_eq!(Shingled::new(&plain).set(), Shingled::new(&method).set());
+    }
+
+    /// A docstring is prose, not code: it is cut like a Rust doc comment, so
+    /// two functions sharing only a docstring share no lexical evidence
+    /// (sutra/509).
+    #[test]
+    fn a_python_docstring_is_not_part_of_the_body() {
+        let source = "\
+def load_rows(conn):
+    \"\"\"Load every row whose score clears the cutoff.\"\"\"
+    rows = conn.execute(\"SELECT id FROM rows\")
+    return rows
+
+
+def plain(conn):
+    rows = conn.execute(\"SELECT id FROM rows\")
+    return rows
+
+
+def only_doc():
+    \"\"\"Nothing here yet.\"\"\"
+
+
+def lone_string(x):
+    return x
+";
+        let registry = crate::parser::adapter::default_registry();
+        let adapter = registry
+            .adapter_for_language("python")
+            .expect("invariant: python is registered");
+        let tree = ParserPool::new(std::time::Duration::from_secs(5))
+            .tree(adapter, source)
+            .expect("invariant: the fixture parses");
+        let spans = body_spans(&tree);
+        let body = |start: usize, end: usize| {
+            let text = span_text(source, start, end);
+            let at = tree_body_start(&spans, &text, start, end);
+            text[at..].to_string()
+        };
+        let (documented, plain) = (body(1, 4), body(7, 9));
+        assert!(documented.starts_with("rows = "), "{documented:?}");
+        assert_eq!(documented, plain);
+        assert_eq!(body(12, 13).trim(), "", "a docstring-only body is empty");
+        assert!(body(16, 17).starts_with("return x"));
     }
 
     #[test]
