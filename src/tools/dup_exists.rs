@@ -494,9 +494,17 @@ fn diff_units(
         };
         let old_path = fh.old_path.as_deref().unwrap_or(path);
         let new_path = fh.new_path.as_deref().unwrap_or(path);
+        // A side with syntax errors yields partial symbols, so classifying
+        // against it would invent or hide units: the file is not checked.
         let mut parse = |src: Option<&str>, p: &str| -> Option<ParseResult> {
             match pool.parse_with(adapter, src?, p) {
-                Ok(parse) => Some(parse),
+                Ok(parse) if parse.parsed_ok => Some(parse),
+                Ok(_) => {
+                    incomplete.push(format!(
+                        "{p}: syntax errors, so its changed functions were not checked"
+                    ));
+                    None
+                }
                 Err(e) => {
                     incomplete.push(format!("{p}: {e}"));
                     None
@@ -856,7 +864,8 @@ fn list_some(names: &[&str]) -> String {
 /// Attach each document's embed vector, normalized: stored, or encoded in
 /// memory when an incremental refresh dropped it (the changed files, where
 /// the units live, first). A function still without one scores embed 0,
-/// which halves its combo, so past `MAX_ENCODED` the result is incomplete.
+/// which halves its combo, so every function left without one — past
+/// `MAX_ENCODED`, too long to encode, or failed to encode — is reported.
 fn load_embed(
     db: &Db,
     workspace_root: &Path,
@@ -866,26 +875,48 @@ fn load_embed(
 ) -> Result<()> {
     let mut stored: HashMap<i64, HrrVec> =
         db.load_all_vectors_by_mode("embed")?.into_iter().collect();
-    let mut missing: Vec<usize> = (0..docs.len())
-        .filter(|&i| {
+    let (mut missing, too_long): (Vec<usize>, Vec<usize>) = (0..docs.len())
+        .filter(|&i| !stored.contains_key(&docs[i].f.hrr.symbol_id))
+        .partition(|&i| {
             let f = docs[i].f;
-            !stored.contains_key(&f.hrr.symbol_id)
-                && f.hrr.end_line - f.hrr.start_line <= MAX_HRR_SYMBOL_LINES
-        })
-        .collect();
+            f.hrr.end_line - f.hrr.start_line <= MAX_HRR_SYMBOL_LINES
+        });
     missing.sort_by_key(|&i| !diff.added_lines.contains_key(&docs[i].f.hrr.file_path));
     let over = missing.len().saturating_sub(MAX_ENCODED);
     missing.truncate(MAX_ENCODED);
     let rows: Vec<_> = missing.iter().map(|&i| &docs[i].f.hrr).collect();
-    stored.extend(crate::similarity::encode_embed_vectors(
-        workspace_root,
-        &rows,
-    )?);
+    let encoded = crate::similarity::encode_embed_vectors(workspace_root, &rows)?;
+    let failed: Vec<&str> = missing
+        .iter()
+        .filter(|&&i| !encoded.contains_key(&docs[i].f.hrr.symbol_id))
+        .map(|&i| docs[i].f.qualified_name.as_str())
+        .collect();
+    stored.extend(encoded);
     if over > 0 {
         incomplete.push(format!(
             "embed cap ({MAX_ENCODED}): {over} function(s) have no stored embed vector and were \
              not encoded, so every unit's embed score against them reads 0 (a full `sutra parse` \
              stores them)"
+        ));
+    }
+    if !too_long.is_empty() {
+        let names: Vec<&str> = too_long
+            .iter()
+            .map(|&i| docs[i].f.qualified_name.as_str())
+            .collect();
+        incomplete.push(format!(
+            "embed line cap ({MAX_HRR_SYMBOL_LINES}): {} function(s) are too long to embed, so \
+             their embed score reads 0: {}",
+            names.len(),
+            list_some(&names)
+        ));
+    }
+    if !failed.is_empty() {
+        incomplete.push(format!(
+            "embed encode: {} function(s) could not be encoded (file unreadable or \
+             unparseable), so their embed score reads 0: {}",
+            failed.len(),
+            list_some(&failed)
         ));
     }
     for doc in docs {

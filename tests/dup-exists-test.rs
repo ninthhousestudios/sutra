@@ -231,3 +231,51 @@ fn reindenting_a_block_a_function_held_is_not_a_copy() {
     ]);
     assert_eq!(pairs(&review_diff(&fx, "HEAD")), vec![]);
 }
+
+/// A function past the HRR line cap never gets an embed vector; the review
+/// says so instead of scoring it as if the embed channel had run.
+#[test]
+fn a_function_too_long_to_embed_is_reported_incomplete() {
+    let long: String = format!(
+        "{OTHER}\npub fn huge() -> usize {{\n{}    0\n}}\n",
+        "    let _ = 1;\n".repeat(2_001)
+    );
+    let fx = fixture(&[
+        &[("src/lib.rs", LIB), ("src/a.rs", LOAD), ("src/c.rs", &long)],
+        &[("src/b.rs", &copy_named("fetch_rows"))],
+    ]);
+    let advisory = review_diff(&fx, "HEAD");
+    assert!(advisory.error.is_none(), "{:?}", advisory.error);
+    let incomplete = &advisory.report.incomplete;
+    assert!(
+        incomplete
+            .iter()
+            .any(|w| w.starts_with("embed line cap") && w.contains("huge")),
+        "{incomplete:?}"
+    );
+    // The copy still fires on its shared runs.
+    assert_eq!(advisory.report.findings.len(), 1);
+}
+
+/// A changed file with syntax errors is not classified from its partial
+/// symbols: it is reported, not read as clean.
+#[test]
+fn a_changed_file_with_syntax_errors_is_reported_not_checked() {
+    let broken = format!("{}\npub fn broken( {{\n", copy_named("fetch_rows"));
+    let fx = fixture(&[
+        &[("src/lib.rs", LIB), ("src/a.rs", LOAD), ("src/c.rs", OTHER)],
+        &[("src/b.rs", &broken)],
+    ]);
+    let advisory = review_diff(&fx, "HEAD");
+    assert!(advisory.error.is_none(), "{:?}", advisory.error);
+    assert!(advisory.report.findings.is_empty());
+    assert!(
+        advisory
+            .report
+            .incomplete
+            .iter()
+            .any(|w| w.starts_with("src/b.rs: syntax errors")),
+        "{:?}",
+        advisory.report.incomplete
+    );
+}
