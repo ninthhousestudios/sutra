@@ -59,7 +59,7 @@ src/similarity/
                       Integrated into sutra_review as "hrr_shape_changes"
                       output.
   duplicates.rs     — find_pattern_families: union-find clustering over
-                      strip vectors. Used by sutra_duplicates tool.
+                      strip vectors. Used by sutra_similar without a symbol.
   search.rs         — find_similar: cosine-similarity ranked search.
                       SimilarityMatch{symbol_id, score}. Self-exclusion,
                       threshold filtering, limit truncation.
@@ -73,8 +73,23 @@ src/similarity/
 
 src/tools/
   similar.rs        — MCP tool: sutra_similar(symbol, mode, limit, threshold).
-                      Resolves symbol → HRR vector, linear scan cosine
-                      similarity, returns ranked matches with file locations.
+                      Each mode answers a different question (sutra/484):
+                      dup (default) "does this already exist?" — delegates
+                      to dup_exists::neighbours; embed / strip — linear
+                      scan cosine over the stored HRR vectors. Without a
+                      symbol: strip pattern families + name families.
+  dup_exists.rs     — Review-time "this already exists" advisory (sutra/469)
+                      and the one duplicate scorer. Corpus::build (non-test
+                      functions >= 5 lines, tf-idf lexicon, rare 12-token
+                      shingles) + load_embed are shared by the advisory's
+                      score and neighbours. combo = (embed + lex) / 2;
+                      block = shared runs held by <= 3 functions; a match
+                      fires on block >= 6 or combo >= 0.5. neighbours ranks
+                      firing matches first, then by combo; no delegates /
+                      extracted suppression (there is no change to read).
+                      Back-test: `experiments/dup-exists/similar.py`
+                      (sutra/459's original ranks 2nd, 437's 3rd; strip
+                      ranked them 470th and 1258th).
 
 src/db/
   similarity.rs     — HrrSymbolRow, SymbolSummary, PatternFamily types.

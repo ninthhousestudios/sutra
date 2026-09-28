@@ -60,6 +60,20 @@ def check(repo, sha):
     if os.path.exists(out):
         with open(out) as f:
             return json.load(f)
+    ws, wt = checkout(repo, sha)
+    raw = sh(
+        BIN, "check", "--diff", sha, "--format", "json", cwd=wt, env=ENV, check=False
+    )
+    result = json.loads(raw)["dup_exists"]
+    os.makedirs(f"{ROOT}/out", exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(result, f, indent=1)
+    return result
+
+
+def checkout(repo, sha):
+    """The scratch workspace for `repo`, checked out and parsed at <sha>:
+    (workspace id, worktree path)."""
     ws = f"bt469-{name(repo)}"
     wt = f"{ROOT}/wt/{ws}"
     if not os.path.isdir(wt):
@@ -70,14 +84,7 @@ def check(repo, sha):
         sh(BIN, "workspaces", "add", ws, wt, *languages(repo), env=ENV)
     sh("git", "checkout", "-q", "-f", "--detach", sha, cwd=wt)
     sh(BIN, "parse", ws, env=ENV)
-    raw = sh(
-        BIN, "check", "--diff", sha, "--format", "json", cwd=wt, env=ENV, check=False
-    )
-    result = json.loads(raw)["dup_exists"]
-    os.makedirs(f"{ROOT}/out", exist_ok=True)
-    with open(out, "w") as f:
-        json.dump(result, f, indent=1)
-    return result
+    return ws, wt
 
 
 def names_match(qn, want):

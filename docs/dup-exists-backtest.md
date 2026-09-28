@@ -73,7 +73,7 @@ them.
 
 | Channel | What it is | Verdict |
 |---|---|---|
-| strip (`sutra_similar` default) | HRR cosine on AST shape, identifiers stripped | **Unusable for this.** Small functions score 0.7–1.0 against unrelated code, and sutra/459's copied SELECT ranks 577th. |
+| strip (`sutra_similar` default until sutra/484) | HRR cosine on AST shape, identifiers stripped | **Unusable for this.** Small functions score 0.7–1.0 against unrelated code, and sutra/459's copied SELECT ranks 577th. |
 | embed | HRR cosine, AST shape + identifiers | Good for whole-function copies, blind to string literals and to Dart method↔function pairs (see "Similarity quality"). |
 | lex | tf-idf cosine over identifier subtokens of the body (signature dropped) | Carries most of the recall. Needs no index change. |
 | **combo** | (embed + lex) / 2 | Main ranking score. |
@@ -264,11 +264,13 @@ Representative DUP items:
 
 ## Similarity quality (sutra/407 concern)
 
-- **strip mode, the `sutra_similar` default, is not a duplicate detector.**
+- **strip mode, the `sutra_similar` default until sutra/484, is not a duplicate detector.**
   It scores nearly any two small functions of similar shape at 0.7–1.0
   (`Region::label` vs `ReportKind::as_str` 0.99; `resolveUserSignSet` vs
   `resolveActiveFile` 0.80). It ranks known copies 338th–908th (sutra/459,
-  437, 460). Use embed or lexical for "does this exist".
+  437, 460). Use embed or lexical for "does this exist". sutra/484 made
+  `sutra_similar`'s default `dup`, this doc's combo + block ranking
+  (`experiments/dup-exists/similar.py`: 459's original 2nd, 437's 3rd).
 - **Dart method vs top-level function: HRR is near-orthogonal even for
   token-identical bodies.** `_ContextDateFieldState._showInvalid` (method) vs
   `showInvalidEntry` (top-level function, same body minus a `mounted` guard)

@@ -1072,9 +1072,12 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Find structurally similar functions using HRR vector similarity. \
-            With symbol: finds functions similar to it. Mode 'strip' (default) matches AST shape \
-            regardless of identifiers; mode 'embed' matches structure and naming. \
+        description = "Find similar functions. With symbol, the mode says which question it \
+            answers. 'dup' (default): does this logic already exist? Ranks likely duplicates by \
+            identifiers (HRR embed + tf-idf) and rare shared code runs; likely_duplicate marks \
+            the ones the review-time dup check would report. 'embed': HRR cosine on AST shape \
+            plus identifiers. 'strip': same AST shape with identifiers ignored; nearly any two \
+            small functions of similar shape score 0.7-1.0, so it is not a duplicate check. \
             Without symbol: finds all near-duplicate pattern families (groups of 3+ functions \
             with near-identical AST structure)."
     )]
@@ -1085,11 +1088,9 @@ impl SutraServer {
         let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::similar::handle(
             ctx.db(),
-            args.symbol.as_deref(),
-            args.mode.as_deref(),
-            args.limit,
-            args.threshold,
-            args.min_group,
+            ctx.workspace_root(),
+            &crate::parser::adapter::default_registry(),
+            &args,
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))

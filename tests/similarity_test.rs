@@ -65,6 +65,24 @@ fn parse(f: &Fixture) {
     sutra::pipeline::parse_workspace(&f.ws, &f.db, &f.config, &cancel, &registry).unwrap();
 }
 
+fn similar(
+    f: &Fixture,
+    symbol: Option<&str>,
+    mode: Option<&str>,
+    limit: Option<usize>,
+    threshold: Option<f64>,
+) -> serde_json::Value {
+    let args = sutra::tools::similar::SimilarArgs {
+        workspace: String::new(),
+        symbol: symbol.map(str::to_string),
+        mode: mode.map(str::to_string),
+        limit,
+        threshold,
+        min_group: None,
+    };
+    sutra::tools::similar::handle(&f.db, &f.ws.root, &default_registry(), &args).unwrap()
+}
+
 fn load_vectors(db: &Db) -> Vec<(i64, String, HrrVec)> {
     let conn = db.conn_for_test();
     let mut stmt = conn
@@ -260,15 +278,7 @@ fn similar_search_strip_mode() {
     )]);
     parse(&f);
 
-    let result = sutra::tools::similar::handle(
-        &f.db,
-        Some("alpha"),
-        Some("strip"),
-        Some(10),
-        Some(0.0),
-        None,
-    )
-    .unwrap();
+    let result = similar(&f, Some("alpha"), Some("strip"), Some(10), Some(0.0));
     let matches = result["matches"].as_array().unwrap();
     assert!(
         !matches.is_empty(),
@@ -296,24 +306,8 @@ fn similar_search_embed_mode_lower_than_strip() {
     )]);
     parse(&f);
 
-    let strip_result = sutra::tools::similar::handle(
-        &f.db,
-        Some("alpha"),
-        Some("strip"),
-        Some(10),
-        Some(0.0),
-        None,
-    )
-    .unwrap();
-    let embed_result = sutra::tools::similar::handle(
-        &f.db,
-        Some("alpha"),
-        Some("embed"),
-        Some(10),
-        Some(0.0),
-        None,
-    )
-    .unwrap();
+    let strip_result = similar(&f, Some("alpha"), Some("strip"), Some(10), Some(0.0));
+    let embed_result = similar(&f, Some("alpha"), Some("embed"), Some(10), Some(0.0));
 
     let strip_sim = strip_result["matches"][0]["similarity"].as_f64().unwrap();
     let embed_sim = embed_result["matches"][0]["similarity"].as_f64().unwrap();
@@ -330,15 +324,7 @@ fn similar_search_excludes_self() {
     let f = setup(&[("src/lib.rs", "pub fn only_one(x: i32) -> i32 { x + 1 }\n")]);
     parse(&f);
 
-    let result = sutra::tools::similar::handle(
-        &f.db,
-        Some("only_one"),
-        Some("strip"),
-        Some(10),
-        Some(0.0),
-        None,
-    )
-    .unwrap();
+    let result = similar(&f, Some("only_one"), Some("strip"), Some(10), Some(0.0));
     let matches = result["matches"].as_array().unwrap();
     assert!(
         matches.is_empty(),
@@ -351,15 +337,7 @@ fn similar_search_unknown_symbol() {
     let f = setup(&[("src/lib.rs", "pub fn exists() {}\n")]);
     parse(&f);
 
-    let result = sutra::tools::similar::handle(
-        &f.db,
-        Some("does_not_exist"),
-        Some("strip"),
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    let result = similar(&f, Some("does_not_exist"), Some("strip"), None, None);
     assert!(
         result.get("diagnostic").is_some(),
         "unknown symbol should return a diagnostic"
@@ -377,9 +355,7 @@ fn similar_search_non_function_symbol() {
     )]);
     parse(&f);
 
-    let result =
-        sutra::tools::similar::handle(&f.db, Some("MyStruct"), Some("strip"), None, None, None)
-            .unwrap();
+    let result = similar(&f, Some("MyStruct"), Some("strip"), None, None);
     assert!(
         result.get("diagnostic").is_some(),
         "struct symbol should return a diagnostic about function-only search"
@@ -400,9 +376,7 @@ fn operator_discrimination() {
 
     let _vecs = load_vectors(&f.db);
     // Use sutra_similar to find matches for "add" — sub and mul should not be ~1.0
-    let result =
-        sutra::tools::similar::handle(&f.db, Some("add"), Some("strip"), Some(10), Some(0.0), None)
-            .unwrap();
+    let result = similar(&f, Some("add"), Some("strip"), Some(10), Some(0.0));
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty(), "should find matches for add");
 
@@ -717,4 +691,46 @@ fn leading_statement_insertion_keeps_functions_similar() {
     let swapped =
         get_vec(&vecs, reordered, "embed").cosine_similarity(get_vec(&vecs, plain, "embed"));
     assert!(swapped < 0.9, "embed: reordered vs plain sim={swapped:.4}");
+}
+
+/// The default answers "does this already exist" (sutra/484): a renamed copy
+/// ranks first and is marked a likely duplicate, while a function that only
+/// shares its shape, which strip scores as high, is not.
+#[test]
+fn default_mode_ranks_the_copy_above_a_same_shape_function() {
+    let f = setup(&[(
+        "src/lib.rs",
+        concat!(
+            "pub fn load_waivers(conn: &Conn, rule: &str) -> Vec<Waiver> {\n",
+            "    let mut stmt = conn.prepare(WAIVER_SELECT).expect(\"invariant: static sql\");\n",
+            "    let rows = stmt.query_map([rule], waiver_from_row).expect(\"invariant: bound\");\n",
+            "    let waivers: Vec<Waiver> = rows.filter_map(|w| w.ok()).collect();\n",
+            "    waivers.into_iter().filter(|w| !w.expired()).collect()\n",
+            "}\n",
+            "pub fn active_waivers(conn: &Conn, rule_id: &str) -> Vec<Waiver> {\n",
+            "    let mut stmt = conn.prepare(WAIVER_SELECT).expect(\"invariant: static sql\");\n",
+            "    let rows = stmt.query_map([rule_id], waiver_from_row).expect(\"invariant: bound\");\n",
+            "    let found: Vec<Waiver> = rows.filter_map(|w| w.ok()).collect();\n",
+            "    found.into_iter().filter(|w| !w.expired()).collect()\n",
+            "}\n",
+            "pub fn render_rows(page: &Page, title: &str) -> Vec<Line> {\n",
+            "    let mut out = page.header(title).expect(\"invariant: header fits\");\n",
+            "    let lines = out.wrap_all([title], line_from_cell).expect(\"invariant: width\");\n",
+            "    let shown: Vec<Line> = lines.filter_map(|l| l.ok()).collect();\n",
+            "    shown.into_iter().filter(|l| !l.blank()).collect()\n",
+            "}\n",
+        ),
+    )]);
+    parse(&f);
+
+    let result = similar(&f, Some("active_waivers"), None, Some(10), Some(0.0));
+    assert_eq!(result["mode"], "dup");
+    let matches = result["matches"].as_array().unwrap();
+    assert_eq!(matches[0]["symbol"], "load_waivers", "{result}");
+    assert_eq!(matches[0]["likely_duplicate"], true, "{result}");
+    let render = matches
+        .iter()
+        .find(|m| m["symbol"] == "render_rows")
+        .expect("the same-shape function is ranked, below the copy");
+    assert_eq!(render["likely_duplicate"], false, "{result}");
 }

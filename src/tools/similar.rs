@@ -2,11 +2,15 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
+use std::path::Path;
+
 use crate::db::Db;
 use crate::db::ResolveResult;
 use crate::diagnostics::{CandidateInfo, Diagnostic};
 use crate::error::{Result, SutraError};
+use crate::parser::adapter::LanguageRegistry;
 use crate::similarity::search;
+use crate::tools::dup_exists::{self, Neighbours};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SimilarArgs {
@@ -15,7 +19,10 @@ pub struct SimilarArgs {
     /// Symbol name to find similar functions for. Omit to find all near-duplicate pattern families.
     #[serde(default)]
     pub symbol: Option<String>,
-    /// Similarity mode: "strip" (structural shape only, default) or "embed" (structure + identifiers)
+    /// Similarity mode. "dup" (default): does this logic already exist? Ranks likely duplicates
+    /// by identifiers, AST shape and rare shared code runs. "embed": HRR cosine on AST shape plus
+    /// identifiers. "strip": same AST shape, identifiers ignored; nearly any two small functions
+    /// of similar shape score high, so it is not a duplicate check.
     #[serde(default)]
     pub mode: Option<String>,
     /// Maximum number of results (default: 10 for symbol mode, all for duplicates mode)
@@ -31,33 +38,43 @@ pub struct SimilarArgs {
 
 pub fn handle(
     db: &Db,
-    symbol: Option<&str>,
-    mode: Option<&str>,
-    limit: Option<usize>,
-    threshold: Option<f64>,
-    min_group: Option<usize>,
+    workspace_root: &Path,
+    registry: &LanguageRegistry,
+    args: &SimilarArgs,
 ) -> Result<serde_json::Value> {
-    match symbol {
-        Some(sym) => handle_similar(db, sym, mode, limit, threshold),
-        None => handle_duplicates(db, threshold, min_group),
+    match args.symbol.as_deref() {
+        Some(sym) => handle_similar(
+            db,
+            workspace_root,
+            registry,
+            sym,
+            args.mode.as_deref(),
+            args.limit,
+            args.threshold,
+        ),
+        None => handle_duplicates(db, args.threshold, args.min_group),
     }
 }
 
 fn handle_similar(
     db: &Db,
+    workspace_root: &Path,
+    registry: &LanguageRegistry,
     symbol: &str,
     mode: Option<&str>,
     limit: Option<usize>,
     threshold: Option<f64>,
 ) -> Result<serde_json::Value> {
-    let mode = mode.unwrap_or("strip");
-    if mode != "strip" && mode != "embed" {
+    let mode = mode.unwrap_or("dup");
+    if !matches!(mode, "dup" | "embed" | "strip") {
         return Err(SutraError::InvalidArgument {
             tool: "sutra_similar",
             argument: "mode",
-            constraint: "must be \"strip\" or \"embed\"".to_string(),
+            constraint: "must be \"dup\", \"embed\" or \"strip\"".to_string(),
             received: Some(mode.to_string()),
-            next_action: "Retry with mode=\"strip\" or mode=\"embed\".".to_string(),
+            next_action: "Retry with mode=\"dup\" (does this already exist?), \"embed\" or \
+                          \"strip\" (same AST shape)."
+                .to_string(),
         });
     }
     let limit = limit.unwrap_or(10);
@@ -111,6 +128,18 @@ fn handle_similar(
             "diagnostic": "Similarity search only works on functions and methods. \
                            This symbol is a ".to_string() + &sym.kind + ".",
         }));
+    }
+
+    if mode == "dup" {
+        let found = dup_exists::neighbours(db, workspace_root, registry, sym.id, limit, threshold)?;
+        return Ok(match found {
+            Some(n) => neighbours_json(&n, threshold, limit),
+            None => json!({
+                "symbol": sym.qualified_name,
+                "mode": mode,
+                "diagnostic": "This function is not indexed yet. Try reparsing the workspace.",
+            }),
+        });
     }
 
     let query_vec = match db.load_hrr_vector(sym.id, mode)? {
@@ -169,6 +198,40 @@ fn handle_similar(
         "threshold": threshold,
         "limit": limit,
     }))
+}
+
+fn neighbours_json(n: &Neighbours, threshold: f64, limit: usize) -> serde_json::Value {
+    let matches: Vec<serde_json::Value> = n
+        .matches
+        .iter()
+        .map(|m| {
+            let f = n.matched(m);
+            json!({
+                "symbol": f.qualified_name,
+                "file": f.hrr.file_path,
+                "lines": format!("{}-{}", f.hrr.start_line, f.hrr.end_line),
+                "similarity": m.combo,
+                "embed": m.embed,
+                "lex": m.lex,
+                "shared_runs": m.shared_runs,
+                "likely_duplicate": Neighbours::fires(m),
+                "shared": m.shared,
+            })
+        })
+        .collect();
+    let mut out = json!({
+        "query_symbol": n.query().qualified_name,
+        "mode": "dup",
+        "matches": matches,
+        "total": matches.len(),
+        "candidates": n.candidates,
+        "threshold": threshold,
+        "limit": limit,
+    });
+    if !n.incomplete.is_empty() {
+        out["incomplete"] = json!(n.incomplete);
+    }
+    out
 }
 
 fn handle_duplicates(

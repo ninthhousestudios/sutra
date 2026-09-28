@@ -372,6 +372,15 @@ impl Doc<'_> {
     fn body(&self) -> &str {
         &self.text[self.body..]
     }
+
+    /// HRR embed cosine; 0 when either side has no vector ([`load_embed`]
+    /// reports those).
+    fn embed_cosine(&self, other: &Doc<'_>) -> f64 {
+        match (&self.embed, &other.embed) {
+            (Some(a), Some(b)) => a.dot_product(b),
+            _ => 0.0,
+        }
+    }
 }
 
 /// Document frequencies over the corpus: of subtokens (for tf-idf) and of
@@ -453,6 +462,17 @@ impl Lexicon {
             .map(|(&id, &c)| (id, self.weight(self.term_df[id], c)))
             .collect();
         Self::normalize(v, extra)
+    }
+
+    /// Per document, its tf-idf cosine with `query`.
+    fn lex_scores(&self, query: &[(usize, f64)], docs: usize) -> Vec<f64> {
+        let mut lex = vec![0.0f64; docs];
+        for &(id, w) in query {
+            for &(d, dw) in &self.postings[id] {
+                lex[d] += w * dw;
+            }
+        }
+        lex
     }
 
     /// Per document, the rare shingles of `query` it shares. A shingle is
@@ -756,76 +776,14 @@ fn score(
     diff: &DiffUnits,
     report: &mut DupReport,
 ) -> Result<Vec<DupFinding>> {
-    let is_test = |f: &CorpusFunction| {
-        parser::flags_mark_test(f.flags, &f.hrr.language)
-            || adapter_for(registry, &f.hrr.file_path)
-                .is_some_and(|a| a.is_test_path(&f.hrr.file_path))
-    };
-    let mut pool = ParserPool::new(std::time::Duration::from_secs(5));
-    let mut sources: HashMap<&str, Option<(String, Option<BodySpans>)>> = HashMap::new();
-    let mut lexicon = Lexicon::default();
-    let mut docs: Vec<Doc<'_>> = Vec::new();
-    let mut counts: Vec<HashMap<usize, u32>> = Vec::new();
-    for (function, f) in corpus.iter().enumerate() {
-        let (start, end) = (to_line(f.hrr.start_line), to_line(f.hrr.end_line));
-        if end + 1 - start < MIN_LINES || is_test(f) || diff.gone.contains(&f.hrr.file_path) {
-            continue;
-        }
-        let path = f.hrr.file_path.as_str();
-        let source = sources.entry(path).or_insert_with(|| {
-            match std::fs::read_to_string(workspace_root.join(path)) {
-                Ok(s) => {
-                    let adapter = adapter_for(registry, path)
-                        .filter(|a| TREE_BODY_LANGUAGES.contains(&a.language_id()));
-                    let spans = match adapter.map(|a| pool.tree(a, &s)) {
-                        Some(Ok(tree)) => Some(body_spans(&tree)),
-                        // The signature stays in its functions' lexical
-                        // channels, which dilutes their scores.
-                        Some(Err(e)) => {
-                            report.incomplete.push(format!(
-                                "{path}: {e}, so its functions were scored with their signatures"
-                            ));
-                            None
-                        }
-                        None => None,
-                    };
-                    Some((s, spans))
-                }
-                Err(e) => {
-                    report.incomplete.push(format!("{path}: {e}"));
-                    None
-                }
-            }
-        });
-        let Some((source, spans)) = source else {
-            continue;
-        };
-        let text = span_text(source, start, end);
-        let body = match spans {
-            Some(spans) => tree_body_start(spans, &text, start, end),
-            None => text.len() - body_only(&text).len(),
-        };
-        let shingles = Shingled::new(&text[body..]).set();
-        lexicon.add_shingles(docs.len(), &shingles);
-        counts.push(lexicon.count(&text[body..]));
-        docs.push(Doc {
-            function,
-            f,
-            text,
-            body,
-            shingles,
-            lex: Vec::new(),
-            embed: None,
-        });
-    }
-    lexicon.docs = docs.len();
-    lexicon.postings = vec![Vec::new(); lexicon.terms.len()];
-    for (i, (doc, c)) in docs.iter_mut().zip(&counts).enumerate() {
-        doc.lex = lexicon.doc_vector(c);
-        for &(id, w) in &doc.lex {
-            lexicon.postings[id].push((i, w));
-        }
-    }
+    let Corpus { mut docs, lexicon } = Corpus::build(
+        workspace_root,
+        registry,
+        corpus,
+        |f| !diff.gone.contains(&f.hrr.file_path),
+        None,
+        &mut report.incomplete,
+    );
 
     let (mut units, before) = collect_units(&docs, diff);
     if units.len() > MAX_UNITS {
@@ -841,7 +799,13 @@ fn score(
         units.truncate(MAX_UNITS);
     }
     report.checked = units.len();
-    load_embed(db, workspace_root, &mut docs, diff, &mut report.incomplete)?;
+    load_embed(
+        db,
+        workspace_root,
+        &mut docs,
+        |d| diff.added_lines.contains_key(&d.f.hrr.file_path),
+        &mut report.incomplete,
+    )?;
 
     let is_unit: HashSet<usize> = units.iter().map(|u| u.doc).collect();
     let added: HashSet<usize> = units
@@ -878,23 +842,10 @@ fn score(
                 &modified_query
             }
         };
-        let mut lex = vec![0.0f64; docs.len()];
-        for &(id, w) in query {
-            for &(d, dw) in &lexicon.postings[id] {
-                lex[d] += w * dw;
-            }
-        }
+        let lex = lexicon.lex_scores(query, docs.len());
 
         let mut candidates: Vec<(usize, f64, f64)> = Vec::new();
-        for (d, doc) in docs.iter().enumerate() {
-            if doc.key() == q.key() || doc.f.hrr.language != q.f.hrr.language {
-                continue;
-            }
-            let embed = match (&q.embed, &doc.embed) {
-                (Some(a), Some(b)) => a.dot_product(b),
-                _ => 0.0,
-            };
-            let combo = (embed + lex[d]) / 2.0;
+        for (d, embed, combo) in rivals(&docs, q, &lex) {
             // embed sees a modified function whole, so its combo speaks for
             // the function's standing family, not the lines the change added.
             let combo_fires = unit.kind == UnitKind::Added && combo >= FIRE_COMBO;
@@ -955,6 +906,117 @@ fn score(
     Ok(findings)
 }
 
+/// Every other same-language document `q` could duplicate, with its embed
+/// cosine and combo `(embed + lex) / 2`, the ranking score. `lex` is `q`'s
+/// [`Lexicon::lex_scores`].
+fn rivals<'d>(
+    docs: &'d [Doc<'_>],
+    q: &'d Doc<'_>,
+    lex: &'d [f64],
+) -> impl Iterator<Item = (usize, f64, f64)> + 'd {
+    docs.iter().enumerate().filter_map(move |(d, doc)| {
+        if doc.key() == q.key() || doc.f.hrr.language != q.f.hrr.language {
+            return None;
+        }
+        let embed = q.embed_cosine(doc);
+        Some((d, embed, (embed + lex[d]) / 2.0))
+    })
+}
+
+/// The candidate matches and their document frequencies: what both the
+/// advisory and `sutra_similar` score against (sutra/484).
+struct Corpus<'c> {
+    docs: Vec<Doc<'c>>,
+    lexicon: Lexicon,
+}
+
+impl<'c> Corpus<'c> {
+    /// Every non-test function of at least `MIN_LINES` lines that `keep`
+    /// admits, plus `always` whatever it is, with its lexical and block
+    /// channels. Embed vectors are left to [`load_embed`].
+    fn build(
+        workspace_root: &Path,
+        registry: &LanguageRegistry,
+        corpus: &'c [CorpusFunction],
+        keep: impl Fn(&CorpusFunction) -> bool,
+        always: Option<i64>,
+        incomplete: &mut Vec<String>,
+    ) -> Self {
+        let is_test = |f: &CorpusFunction| {
+            parser::flags_mark_test(f.flags, &f.hrr.language)
+                || adapter_for(registry, &f.hrr.file_path)
+                    .is_some_and(|a| a.is_test_path(&f.hrr.file_path))
+        };
+        let mut pool = ParserPool::new(std::time::Duration::from_secs(5));
+        let mut sources: HashMap<&str, Option<(String, Option<BodySpans>)>> = HashMap::new();
+        let mut lexicon = Lexicon::default();
+        let mut docs: Vec<Doc<'_>> = Vec::new();
+        let mut counts: Vec<HashMap<usize, u32>> = Vec::new();
+        for (function, f) in corpus.iter().enumerate() {
+            let (start, end) = (to_line(f.hrr.start_line), to_line(f.hrr.end_line));
+            let small = end + 1 - start < MIN_LINES;
+            if always != Some(f.hrr.symbol_id) && (small || is_test(f) || !keep(f)) {
+                continue;
+            }
+            let path = f.hrr.file_path.as_str();
+            let source = sources.entry(path).or_insert_with(|| {
+                match std::fs::read_to_string(workspace_root.join(path)) {
+                    Ok(s) => {
+                        let adapter = adapter_for(registry, path)
+                            .filter(|a| TREE_BODY_LANGUAGES.contains(&a.language_id()));
+                        let spans = match adapter.map(|a| pool.tree(a, &s)) {
+                            Some(Ok(tree)) => Some(body_spans(&tree)),
+                            // The signature stays in its functions' lexical
+                            // channels, which dilutes their scores.
+                            Some(Err(e)) => {
+                                incomplete.push(format!(
+                                    "{path}: {e}, so its functions were scored with their signatures"
+                                ));
+                                None
+                            }
+                            None => None,
+                        };
+                        Some((s, spans))
+                    }
+                    Err(e) => {
+                        incomplete.push(format!("{path}: {e}"));
+                        None
+                    }
+                }
+            });
+            let Some((source, spans)) = source else {
+                continue;
+            };
+            let text = span_text(source, start, end);
+            let body = match spans {
+                Some(spans) => tree_body_start(spans, &text, start, end),
+                None => text.len() - body_only(&text).len(),
+            };
+            let shingles = Shingled::new(&text[body..]).set();
+            lexicon.add_shingles(docs.len(), &shingles);
+            counts.push(lexicon.count(&text[body..]));
+            docs.push(Doc {
+                function,
+                f,
+                text,
+                body,
+                shingles,
+                lex: Vec::new(),
+                embed: None,
+            });
+        }
+        lexicon.docs = docs.len();
+        lexicon.postings = vec![Vec::new(); lexicon.terms.len()];
+        for (i, (doc, c)) in docs.iter_mut().zip(&counts).enumerate() {
+            doc.lex = lexicon.doc_vector(c);
+            for &(id, w) in &doc.lex {
+                lexicon.postings[id].push((i, w));
+            }
+        }
+        Self { docs, lexicon }
+    }
+}
+
 fn round3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
 }
@@ -989,15 +1051,15 @@ fn list_some(names: &[&str]) -> String {
 }
 
 /// Attach each document's embed vector, normalized: stored, or encoded in
-/// memory when an incremental refresh dropped it (the changed files, where
-/// the units live, first). A function still without one scores embed 0,
+/// memory when an incremental refresh dropped it (those `first` picks, where
+/// the queries live, first). A function still without one scores embed 0,
 /// which halves its combo, so every function left without one — past
 /// `MAX_ENCODED`, too long to encode, or failed to encode — is reported.
 fn load_embed(
     db: &Db,
     workspace_root: &Path,
     docs: &mut [Doc<'_>],
-    diff: &DiffUnits,
+    first: impl Fn(&Doc<'_>) -> bool,
     incomplete: &mut Vec<String>,
 ) -> Result<()> {
     let mut stored: HashMap<i64, HrrVec> =
@@ -1008,7 +1070,7 @@ fn load_embed(
             let f = docs[i].f;
             f.hrr.end_line - f.hrr.start_line <= MAX_HRR_SYMBOL_LINES
         });
-    missing.sort_by_key(|&i| !diff.added_lines.contains_key(&docs[i].f.hrr.file_path));
+    missing.sort_by_key(|&i| !first(&docs[i]));
     let over = missing.len().saturating_sub(MAX_ENCODED);
     missing.truncate(MAX_ENCODED);
     let rows: Vec<_> = missing.iter().map(|&i| &docs[i].f.hrr).collect();
@@ -1050,6 +1112,121 @@ fn load_embed(
         doc.embed = stored.remove(&doc.f.hrr.symbol_id).map(|v| v.normalize());
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- similar
+
+/// The functions most likely to duplicate one function: `sutra_similar`'s
+/// default ranking (sutra/484). The advisory's channels, with the whole
+/// function as the query. There is no change to read, so nothing is
+/// suppressed as `delegates` or `extracted`.
+pub struct Neighbours {
+    functions: Vec<CorpusFunction>,
+    query: usize,
+    /// Best first: every match that would fire in the advisory (`block >= 6`
+    /// or `combo >= 0.5`), then the rest by combo.
+    pub matches: Vec<Match>,
+    /// Same-language functions scored against.
+    pub candidates: usize,
+    /// Why the ranking may be missing matches. Non-empty means incomplete.
+    pub incomplete: Vec<String>,
+}
+
+impl Neighbours {
+    pub fn query(&self) -> &CorpusFunction {
+        &self.functions[self.query]
+    }
+
+    pub fn matched(&self, m: &Match) -> &CorpusFunction {
+        &self.functions[m.function]
+    }
+
+    /// The match would fire in the advisory.
+    pub fn fires(m: &Match) -> bool {
+        m.shared_runs >= FIRE_BLOCK || m.combo >= FIRE_COMBO
+    }
+}
+
+/// Rank the functions `symbol_id` may duplicate. Keeps every match that
+/// would fire, and the rest down to `threshold` combo, up to `limit`.
+/// `None` when `symbol_id` is not an indexed function.
+pub fn neighbours(
+    db: &Db,
+    workspace_root: &Path,
+    registry: &LanguageRegistry,
+    symbol_id: i64,
+    limit: usize,
+    threshold: f64,
+) -> Result<Option<Neighbours>> {
+    let functions = db.function_corpus()?;
+    let Some(query) = functions.iter().position(|f| f.hrr.symbol_id == symbol_id) else {
+        return Ok(None);
+    };
+    let mut incomplete = Vec::new();
+    let Corpus { mut docs, lexicon } = Corpus::build(
+        workspace_root,
+        registry,
+        &functions,
+        |_| true,
+        Some(symbol_id),
+        &mut incomplete,
+    );
+    let mut matches = Vec::new();
+    let mut candidates = 0;
+    // Absent only when its file could not be read, which `incomplete` says.
+    if let Some(q) = docs.iter().position(|d| d.function == query) {
+        load_embed(
+            db,
+            workspace_root,
+            &mut docs,
+            |d| d.function == query,
+            &mut incomplete,
+        )?;
+        let q = &docs[q];
+        let block = lexicon.block_scores(&q.shingles, &q.shingles, docs.len());
+        let lex = lexicon.lex_scores(&q.lex, docs.len());
+        let mut ranked: Vec<(bool, usize, Match)> = Vec::new();
+        for (d, embed, combo) in rivals(&docs, q, &lex) {
+            candidates += 1;
+            let m = Match {
+                function: docs[d].function,
+                combo,
+                embed,
+                lex: lex[d],
+                shared_runs: block[d],
+                same_change: false,
+                shared: None,
+            };
+            let fires = Neighbours::fires(&m);
+            if fires || m.combo >= threshold {
+                ranked.push((fires, d, m));
+            }
+        }
+        ranked.sort_by(|(fa, _, a), (fb, _, b)| {
+            fb.cmp(fa)
+                .then(b.combo.total_cmp(&a.combo))
+                .then(b.shared_runs.cmp(&a.shared_runs))
+        });
+        ranked.truncate(limit);
+        let shingled = Shingled::new(q.body());
+        matches = ranked
+            .into_iter()
+            .map(|(_, d, mut m)| {
+                m.shared = shingled.longest_shared(q.body(), &docs[d].shingles);
+                m.combo = round3(m.combo);
+                m.embed = round3(m.embed);
+                m.lex = round3(m.lex);
+                m
+            })
+            .collect();
+    }
+    Ok(Some(Neighbours {
+        functions,
+        query,
+        matches,
+        candidates,
+        incomplete,
+    }))
 }
 
 // ---------------------------------------------------------------- surface

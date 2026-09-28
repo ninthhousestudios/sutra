@@ -28,9 +28,9 @@ pub(crate) const MAX_HRR_SYMBOL_LINES: i64 = 2_000;
 type VectorRow = (i64, String, Vec<u8>);
 
 /// In auto mode, workspaces above this many function symbols downgrade to
-/// strip-only: embed vectors exist solely for `sutra_similar mode=embed`
-/// (families, components, and diff use strip), and at this scale a brute-force
-/// embed scan is degraded anyway — halving storage is the better trade
+/// strip-only: embed vectors serve only `sutra_similar` (modes dup and embed)
+/// and the dup-exists advisory (families, components, and diff use strip), and
+/// at this scale a brute-force embed scan is degraded anyway — halving storage is the better trade
 /// (sutra/327, cap-at-source precedent from sutra/324).
 const AUTO_STRIP_ONLY_SYMBOL_THRESHOLD: i64 = 200_000;
 
@@ -39,7 +39,9 @@ pub enum SimilarityMode {
     /// strip + embed vectors for every function symbol.
     Full,
     /// strip vectors only — pattern families and diff keep full fidelity,
-    /// `sutra_similar mode=embed` becomes unavailable.
+    /// `sutra_similar mode=embed` becomes unavailable, and mode=dup and the
+    /// dup-exists advisory encode embed in memory up to a cap, reporting the
+    /// rest `incomplete`.
     StripOnly,
     /// No HRR encoding at all; existing vectors and families are left as-is.
     Off,
