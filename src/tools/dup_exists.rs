@@ -437,6 +437,10 @@ struct DiffUnits {
     modified: Vec<(OwnedKey, String)>,
     /// Added line ranges of each new-side file.
     added_lines: HashMap<String, Vec<Range<usize>>>,
+    /// Files the reviewed side deleted. The index may still hold them (a
+    /// staged deletion recreated in the worktree), so their functions are
+    /// not matches (sutra/506).
+    gone: HashSet<String>,
 }
 
 fn borrowed(key: &OwnedKey) -> SymbolKey<'_> {
@@ -545,6 +549,16 @@ fn diff_units(
             _ => {}
         }
     }
+    let new_paths: HashSet<&str> = file_hunks
+        .iter()
+        .filter_map(|fh| fh.new_path.as_deref())
+        .collect();
+    units.gone = file_hunks
+        .iter()
+        .filter_map(|fh| fh.old_path.as_deref())
+        .filter(|p| !new_paths.contains(p))
+        .map(str::to_string)
+        .collect();
     // Renamed or moved functions are not new code.
     let moved = resolve_renames(&unmatched_old, &unmatched_new).matched_new;
     units.added = unmatched_new
@@ -665,7 +679,7 @@ fn score(
     let mut counts: Vec<HashMap<usize, u32>> = Vec::new();
     for (function, f) in corpus.iter().enumerate() {
         let (start, end) = (to_line(f.hrr.start_line), to_line(f.hrr.end_line));
-        if end + 1 - start < MIN_LINES || is_test(f) {
+        if end + 1 - start < MIN_LINES || is_test(f) || diff.gone.contains(&f.hrr.file_path) {
             continue;
         }
         let path = f.hrr.file_path.as_str();

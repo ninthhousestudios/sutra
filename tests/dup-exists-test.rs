@@ -3,7 +3,7 @@
 
 mod support;
 
-use support::{Fixture, index, repo};
+use support::{Fixture, git, index, repo, write};
 use sutra::parser::adapter::default_registry;
 use sutra::tools::dup_exists::{self, Advisory, UnitKind};
 use sutra::tools::review;
@@ -201,6 +201,33 @@ fn two_copies_added_together_are_one_pair() {
         pairs(&review_diff(&fx, "HEAD")),
         vec![(UnitKind::Added, "load_rows", "fetch_rows")]
     );
+}
+
+/// A staged deletion recreated in the worktree: the index holds the file, but
+/// the reviewed side does not, so its functions are not matches (sutra/506).
+#[test]
+fn a_function_the_reviewed_side_deleted_is_not_a_match() {
+    let root = repo(&[&[("src/lib.rs", LIB), ("src/a.rs", LOAD), ("src/c.rs", OTHER)]]);
+    let r = root.path();
+    git(r, &["rm", "-q", "src/a.rs"]);
+    write(r, "src/a.rs", LOAD);
+    // Enough unrelated code that git does not pair a.rs and b.rs as a rename.
+    let filler: String = (0..12)
+        .map(|i| format!("pub fn step_{i}(x: u32) -> u32 {{ x.wrapping_mul({i}) }}\n"))
+        .collect();
+    // An edited copy, so it is not taken for load_rows moved.
+    let copy =
+        copy_named("fetch_rows").replace("    kept\n", "    let _n = kept.len();\n    kept\n");
+    write(r, "src/b.rs", &format!("{copy}{filler}"));
+    git(r, &["add", "src/b.rs"]);
+    let fx = index(root, "dup-exists");
+    let scope = review::resolve_diff_entries(fx.root.path(), "staged").unwrap();
+    assert!(
+        scope.entries.iter().all(|e| e.old_path.is_none()),
+        "{:?}",
+        scope.entries
+    );
+    assert_eq!(pairs(&review_diff(&fx, "staged")), vec![]);
 }
 
 #[test]
