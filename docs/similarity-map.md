@@ -87,6 +87,16 @@ src/tools/
                       fires on block >= 6 or combo >= 0.5. neighbours ranks
                       firing matches first, then by combo; no delegates /
                       extracted suppression (there is no change to read).
+                      Missing embed vectors (dropped by an incremental
+                      refresh; all of them in strip-only) are encoded in
+                      memory, 2,000 per request: the advisory takes the
+                      changed files first, neighbours the query and then its
+                      closest same-language functions by block, then lex
+                      (sutra/510). Past the cap, embed reads 0 and the
+                      response says so; mode=off encodes none. Every dup
+                      request rebuilds the corpus (~0.5s on sutra, grows with
+                      the workspace), so sutra_similar runs it on a blocking
+                      thread.
                       Back-test: `experiments/dup-exists/similar.py`
                       (sutra/459's original ranks 2nd, 437's 3rd; strip
                       ranked them 470th and 1258th).

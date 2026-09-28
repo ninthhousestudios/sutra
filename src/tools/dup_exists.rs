@@ -50,8 +50,8 @@ use crate::git;
 use crate::lexical_tokenize::tokenize;
 use crate::parser::adapter::{LanguageRegistry, ParserPool};
 use crate::parser::{self, ParseResult, RefContextKind, flatten_symbols};
-use crate::similarity::MAX_HRR_SYMBOL_LINES;
 use crate::similarity::hrr::HrrVec;
+use crate::similarity::{MAX_HRR_SYMBOL_LINES, SimilarityMode};
 use crate::tools::advisory::{self, adapter_for, dirty_outside_diff, index_mismatch};
 use crate::tools::firings::ReviewedPatch;
 use crate::tools::orphans::qualifier_fits;
@@ -803,7 +803,11 @@ fn score(
         db,
         workspace_root,
         &mut docs,
-        |d| diff.added_lines.contains_key(&d.f.hrr.file_path),
+        Encode {
+            first: |_, d: &Doc<'_>| !diff.added_lines.contains_key(&d.f.hrr.file_path),
+            order: "the changed files first, then the rest in index order",
+            cap: MAX_ENCODED,
+        },
         &mut report.incomplete,
     )?;
 
@@ -1050,16 +1054,27 @@ fn list_some(names: &[&str]) -> String {
     out
 }
 
+/// Which documents without a stored embed vector [`load_embed`] encodes:
+/// up to `cap`, ascending `first`, ties in corpus order. `order` says how,
+/// for the `incomplete` note on the ones past the cap.
+struct Encode<F> {
+    first: F,
+    order: &'static str,
+    cap: usize,
+}
+
 /// Attach each document's embed vector, normalized: stored, or encoded in
-/// memory when an incremental refresh dropped it (those `first` picks, where
-/// the queries live, first). A function still without one scores embed 0,
-/// which halves its combo, so every function left without one — past
-/// `MAX_ENCODED`, too long to encode, or failed to encode — is reported.
-fn load_embed(
+/// memory up to `encode.cap`, in `encode.first` order. Vectors are missing when an
+/// incremental refresh dropped them, and all of them in a strip-only
+/// workspace; under `SUTRA_SIMILARITY_MODE=off` none are encoded. A function
+/// still without one scores embed 0, which halves its combo, so every function
+/// left without one — past the cap, too long to encode, or failed to encode —
+/// is reported.
+fn load_embed<K: Ord>(
     db: &Db,
     workspace_root: &Path,
     docs: &mut [Doc<'_>],
-    first: impl Fn(&Doc<'_>) -> bool,
+    encode: Encode<impl Fn(usize, &Doc<'_>) -> K>,
     incomplete: &mut Vec<String>,
 ) -> Result<()> {
     let mut stored: HashMap<i64, HrrVec> =
@@ -1070,9 +1085,15 @@ fn load_embed(
             let f = docs[i].f;
             f.hrr.end_line - f.hrr.start_line <= MAX_HRR_SYMBOL_LINES
         });
-    missing.sort_by_key(|&i| !first(&docs[i]));
-    let over = missing.len().saturating_sub(MAX_ENCODED);
-    missing.truncate(MAX_ENCODED);
+    let (mode, _) = crate::similarity::resolve_similarity_mode(db)?;
+    let cap = if mode == SimilarityMode::Off {
+        0
+    } else {
+        encode.cap
+    };
+    missing.sort_by_cached_key(|&i| (encode.first)(i, &docs[i]));
+    let over = missing.len().saturating_sub(cap);
+    missing.truncate(cap);
     let rows: Vec<_> = missing.iter().map(|&i| &docs[i].f.hrr).collect();
     let encoded = crate::similarity::encode_embed_vectors(workspace_root, &rows)?;
     let failed: Vec<&str> = missing
@@ -1082,10 +1103,21 @@ fn load_embed(
         .collect();
     stored.extend(encoded);
     if over > 0 {
+        let why = match mode {
+            SimilarityMode::Off => "SUTRA_SIMILARITY_MODE=off encodes none".to_string(),
+            _ => format!("only {cap} are encoded per request, {}", encode.order),
+        };
+        let fix = match mode {
+            SimilarityMode::Full => "a full `sutra parse` stores them",
+            SimilarityMode::StripOnly => {
+                "the workspace is strip-only, which stores none: SUTRA_SIMILARITY_MODE=full and \
+                 a full `sutra parse` store them"
+            }
+            SimilarityMode::Off => "SUTRA_SIMILARITY_MODE=full and a full `sutra parse` store them",
+        };
         incomplete.push(format!(
-            "embed cap ({MAX_ENCODED}): {over} function(s) have no stored embed vector and were \
-             not encoded, so every unit's embed score against them reads 0 (a full `sutra parse` \
-             stores them)"
+            "embed: {over} function(s) have no stored embed vector and were not encoded ({why}), \
+             so every embed score against them reads 0 ({fix})"
         ));
     }
     if !too_long.is_empty() {
@@ -1158,6 +1190,27 @@ pub fn neighbours(
     limit: usize,
     threshold: f64,
 ) -> Result<Option<Neighbours>> {
+    rank_neighbours(
+        db,
+        workspace_root,
+        registry,
+        symbol_id,
+        limit,
+        threshold,
+        MAX_ENCODED,
+    )
+}
+
+/// [`neighbours`], encoding at most `encode_cap` missing embed vectors.
+fn rank_neighbours(
+    db: &Db,
+    workspace_root: &Path,
+    registry: &LanguageRegistry,
+    symbol_id: i64,
+    limit: usize,
+    threshold: f64,
+    encode_cap: usize,
+) -> Result<Option<Neighbours>> {
     let functions = db.function_corpus()?;
     let Some(query) = functions.iter().position(|f| f.hrr.symbol_id == symbol_id) else {
         return Ok(None);
@@ -1175,16 +1228,36 @@ pub fn neighbours(
     let mut candidates = 0;
     // Absent only when its file could not be read, which `incomplete` says.
     if let Some(q) = docs.iter().position(|d| d.function == query) {
+        let (block, lex) = {
+            let q = &docs[q];
+            (
+                lexicon.block_scores(&q.shingles, &q.shingles, docs.len()),
+                lexicon.lex_scores(&q.lex, docs.len()),
+            )
+        };
+        // Missing embed vectors go to the query, then the same-language
+        // functions closest on the other two channels: past the cap, embed 0
+        // falls on the ones least likely to rank (sutra/510).
+        let language = docs[q].f.hrr.language.as_str();
+        let mut closest: Vec<usize> = (0..docs.len()).collect();
+        closest.sort_by(|&a, &b| block[b].cmp(&block[a]).then(lex[b].total_cmp(&lex[a])));
+        let mut rank = vec![0; docs.len()];
+        for (r, &d) in closest.iter().enumerate() {
+            rank[d] = r;
+        }
         load_embed(
             db,
             workspace_root,
             &mut docs,
-            |d| d.function == query,
+            Encode {
+                first: |d, doc: &Doc<'_>| (d != q, doc.f.hrr.language != language, rank[d]),
+                order: "the query first, then the functions closest on shared runs and \
+                        identifiers",
+                cap: encode_cap,
+            },
             &mut incomplete,
         )?;
         let q = &docs[q];
-        let block = lexicon.block_scores(&q.shingles, &q.shingles, docs.len());
-        let lex = lexicon.lex_scores(&q.lex, docs.len());
         let mut ranked: Vec<(bool, usize, Match)> = Vec::new();
         for (d, embed, combo) in rivals(&docs, q, &lex) {
             candidates += 1;
@@ -1615,5 +1688,76 @@ def lone_string(x):
     #[test]
     fn span_text_is_one_based_and_inclusive() {
         assert_eq!(span_text("a\nb\nc\nd", 2, 3), "b\nc");
+    }
+
+    /// Past the encode cap, the embed vectors a strip-only workspace lacks go
+    /// to the query's closest candidates, not the first in index order: 30
+    /// unrelated functions indexed ahead of the original must not take its
+    /// embed score (sutra/510).
+    #[test]
+    fn missing_embed_vectors_are_encoded_closest_first() {
+        let ws_dir = tempfile::tempdir().expect("tempdir");
+        let db_dir = tempfile::tempdir().expect("tempdir");
+        let filler: String = (0..30)
+            .map(|i| {
+                format!(
+                    "pub fn filler_{i}(x: u32) -> u32 {{\n    let a = x + {i};\n    \
+                     let b = a * 3;\n    let c = b ^ a;\n    c\n}}\n"
+                )
+            })
+            .collect();
+        let pair = concat!(
+            "pub fn load_waivers(conn: &Conn, rule: &str) -> Vec<Waiver> {\n",
+            "    let mut stmt = conn.prepare(WAIVER_SELECT).expect(\"invariant: static sql\");\n",
+            "    let rows = stmt.query_map([rule], waiver_from_row).expect(\"invariant: bound\");\n",
+            "    let waivers: Vec<Waiver> = rows.filter_map(|w| w.ok()).collect();\n",
+            "    waivers.into_iter().filter(|w| !w.expired()).collect()\n",
+            "}\n",
+            "pub fn active_waivers(conn: &Conn, rule_id: &str) -> Vec<Waiver> {\n",
+            "    let mut stmt = conn.prepare(WAIVER_SELECT).expect(\"invariant: static sql\");\n",
+            "    let rows = stmt.query_map([rule_id], waiver_from_row).expect(\"invariant: bound\");\n",
+            "    let found: Vec<Waiver> = rows.filter_map(|w| w.ok()).collect();\n",
+            "    found.into_iter().filter(|w| !w.expired()).collect()\n",
+            "}\n",
+        );
+        std::fs::create_dir_all(ws_dir.path().join("src")).expect("mkdir");
+        std::fs::write(ws_dir.path().join("src/a_filler.rs"), filler).expect("write");
+        std::fs::write(ws_dir.path().join("src/z_pair.rs"), pair).expect("write");
+        let ws = crate::workspace::WorkspaceEntry {
+            id: "encode-order".to_string(),
+            root: ws_dir.path().to_path_buf(),
+            languages: vec!["rust".to_string()],
+            frozen: false,
+        };
+        let config = crate::config::Config {
+            db_dir: db_dir.path().to_path_buf(),
+            workspaces_path: db_dir.path().join("workspaces.toml"),
+            listen_addr: "127.0.0.1:0".to_string(),
+            parse_parallelism: 1,
+            log_level: "warn".to_string(),
+            constraints_idle_timeout_sec: 1800,
+            parse_timeout_ms: 5000,
+        };
+        let db = Db::open_unchecked(&ws.id, db_dir.path()).expect("db");
+        let registry = crate::parser::adapter::default_registry();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        crate::pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).expect("parse");
+        assert!(db.delete_embed_vectors().expect("delete") > 30);
+        let query = db
+            .resolve_symbol("active_waivers", None)
+            .expect("resolve")
+            .expect("indexed");
+
+        let n = rank_neighbours(&db, &ws.root, &registry, query.id, 3, 0.0, 5)
+            .expect("rank")
+            .expect("a function");
+        let top = &n.matches[0];
+        assert_eq!(n.matched(top).qualified_name, "load_waivers");
+        assert!(top.embed > 0.5, "the original was encoded: {}", top.embed);
+        assert!(
+            n.incomplete.iter().any(|i| i.contains("closest")),
+            "{:?}",
+            n.incomplete
+        );
     }
 }

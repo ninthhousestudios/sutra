@@ -1086,14 +1086,26 @@ impl SutraServer {
         Parameters(args): Parameters<SimilarArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::similar::handle(
-            ctx.db(),
-            ctx.workspace_root(),
-            &crate::parser::adapter::default_registry(),
-            &args,
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
+        // mode=dup reads and tokenizes every function's source per request:
+        // off the async executor, so a slow query stalls no other tool (sutra/510).
+        let (ctx, result) = tokio::task::spawn_blocking(move || {
+            let result = tools::similar::handle(
+                ctx.db(),
+                ctx.workspace_root(),
+                &crate::parser::adapter::default_registry(),
+                &args,
+            );
+            (ctx, result)
+        })
+        .await
+        .map_err(|e| {
+            ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
+                format!("similar task panicked: {e}"),
+                None,
+            )
+        })?;
+        to_compact_json(ctx.wrap(result.map_err(sutra_to_rmcp)?))
     }
 
     #[tool(description = "Workspace lifecycle. \

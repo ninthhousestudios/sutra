@@ -61,10 +61,27 @@ impl SimilarityMode {
 /// Resolve the effective mode: explicit `SUTRA_SIMILARITY_MODE` wins; the
 /// default (`auto`) downgrades to strip-only above the symbol threshold.
 fn effective_similarity_mode(db: &Db) -> Result<SimilarityMode> {
+    let (mode, downgraded) = resolve_similarity_mode(db)?;
+    if let Some(fn_count) = downgraded {
+        warn!(
+            fn_count,
+            threshold = AUTO_STRIP_ONLY_SYMBOL_THRESHOLD,
+            "similarity: large workspace — downgrading to strip-only HRR \
+             (set SUTRA_SIMILARITY_MODE=full to override)"
+        );
+    }
+    Ok(mode)
+}
+
+/// The effective mode, and the function count when `auto` downgraded to
+/// strip-only on it. Does not log the downgrade: the query path (sutra/510)
+/// resolves the mode per request.
+pub(crate) fn resolve_similarity_mode(db: &Db) -> Result<(SimilarityMode, Option<i64>)> {
+    // swallow: an unset or non-UTF-8 variable means auto, the default.
     match std::env::var("SUTRA_SIMILARITY_MODE").ok().as_deref() {
         None | Some("auto") | Some("") => {}
         Some(other) => match SimilarityMode::parse(other) {
-            Some(mode) => return Ok(mode),
+            Some(mode) => return Ok((mode, None)),
             None => {
                 warn!(
                     value = other,
@@ -75,15 +92,9 @@ fn effective_similarity_mode(db: &Db) -> Result<SimilarityMode> {
     }
     let fn_count = db.function_symbol_count()?;
     if fn_count > AUTO_STRIP_ONLY_SYMBOL_THRESHOLD {
-        warn!(
-            fn_count,
-            threshold = AUTO_STRIP_ONLY_SYMBOL_THRESHOLD,
-            "similarity: large workspace — downgrading to strip-only HRR \
-             (set SUTRA_SIMILARITY_MODE=full to override)"
-        );
-        Ok(SimilarityMode::StripOnly)
+        Ok((SimilarityMode::StripOnly, Some(fn_count)))
     } else {
-        Ok(SimilarityMode::Full)
+        Ok((SimilarityMode::Full, None))
     }
 }
 
