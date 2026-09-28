@@ -130,6 +130,24 @@ fn a_function_that_calls_the_match_is_reuse() {
     assert_eq!(pairs(&review_diff(&fx, "HEAD")), vec![]);
 }
 
+/// A reference that is not a call (a value read of the function) is not
+/// reuse: the copy still duplicates the match (sutra/505).
+#[test]
+fn a_value_reference_to_the_match_is_not_reuse() {
+    let wrapper = copy_named("fetch_rows").replace(
+        "    kept\n",
+        "    let _loader = crate::a::load_rows;\n    kept\n",
+    );
+    let fx = fixture(&[
+        &[("src/lib.rs", LIB), ("src/a.rs", LOAD), ("src/c.rs", OTHER)],
+        &[("src/b.rs", &wrapper)],
+    ]);
+    assert_eq!(
+        pairs(&review_diff(&fx, "HEAD")),
+        vec![(UnitKind::Added, "fetch_rows", "load_rows")]
+    );
+}
+
 /// The extraction commit itself: the new helper matches the code it came
 /// from, which now calls it (mid-extraction, before the old block is gone).
 #[test]
@@ -148,6 +166,29 @@ fn the_function_a_helper_is_extracted_from_is_not_a_match() {
         &[("src/a.rs", &format!("{calling}\n{LOAD}"))],
     ]);
     assert_eq!(pairs(&review_diff(&fx, "HEAD")), vec![]);
+}
+
+/// The code a helper came from only naming it as a value has not had the
+/// block extracted: the pair still fires (sutra/505).
+#[test]
+fn a_value_reference_from_the_old_code_is_not_extraction() {
+    let inline = LOAD.replace(
+        "pub fn load_rows(conn: &Conn) -> Vec<Row> {",
+        "pub fn report(conn: &Conn) -> usize {\n    let banner = 1;",
+    );
+    let naming = inline.replace("    kept\n", "    let _loader = load_rows;\n    kept\n");
+    let fx = fixture(&[
+        &[
+            ("src/lib.rs", LIB),
+            ("src/a.rs", &inline),
+            ("src/c.rs", OTHER),
+        ],
+        &[("src/a.rs", &format!("{naming}\n{LOAD}"))],
+    ]);
+    assert_eq!(
+        pairs(&review_diff(&fx, "HEAD")),
+        vec![(UnitKind::Added, "load_rows", "report")]
+    );
 }
 
 #[test]

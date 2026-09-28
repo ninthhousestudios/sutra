@@ -48,7 +48,7 @@ use crate::error::Result;
 use crate::git;
 use crate::lexical_tokenize::tokenize;
 use crate::parser::adapter::{LanguageRegistry, ParserPool};
-use crate::parser::{self, ParseResult, flatten_symbols};
+use crate::parser::{self, ParseResult, RefContextKind, flatten_symbols};
 use crate::similarity::MAX_HRR_SYMBOL_LINES;
 use crate::similarity::hrr::HrrVec;
 use crate::tools::advisory::{self, adapter_for, dirty_outside_diff, index_mismatch};
@@ -388,10 +388,13 @@ impl Lexicon {
 
 /// Lines `refs` in `lines` call `target`: a resolved reference to it, or an
 /// unresolved one by its name whose qualifier names its type or module. A
-/// bare short name is not enough (both `build`s in ai/197 are `build`).
+/// bare short name is not enough (both `build`s in ai/197 are `build`). Only
+/// a call counts: naming the function as a value or type is not delegating
+/// to it (sutra/505).
 fn calls(refs: &[RefRow], lines: &impl Fn(usize) -> bool, target: &CorpusFunction) -> bool {
     refs.iter().any(|r| {
-        usize::try_from(r.line).is_ok_and(lines)
+        r.context_kind == RefContextKind::Call.as_str()
+            && usize::try_from(r.line).is_ok_and(lines)
             && match r.target_symbol_id {
                 Some(id) => id == target.hrr.symbol_id,
                 None => {
