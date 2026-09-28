@@ -1,6 +1,7 @@
 # AgentOps session artifacts
 .agents/
 docs/sutra-python-repo-notes.md
+__pycache__/
 
 # Build output
 target/
