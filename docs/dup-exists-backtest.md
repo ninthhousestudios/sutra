@@ -381,7 +381,8 @@ each commit in a scratch worktree under an isolated HOME.
 - **`delegates` and `extracted` read the index's resolved references.**
   An unresolved reference counts only when its qualifier names the target's
   type or module, never on the short name alone. That fixes the harness's
-  ai/197 `build` false flag.
+  ai/197 `build` false flag. Only a `call` reference counts (sutra/505). A
+  value or type reference is not reuse.
 - **Block is scored over the whole corpus.** The prototype's noise sweep
   took block hits only from the top 40 functions by combo. Its back-test had
   no such limit (sutra/437 fires at combo 0.24). Production matches the
@@ -402,8 +403,19 @@ unit (84 new shared runs). 438 and 401 do not, as before.
 
 | Sample | Commits | Added fns firing (vs pre-existing code) | Modified units firing (vs pre-existing) | Groups per review: median / mean / max | Commits with a group |
 |---|---|---|---|---|---|
-| tuning | 30 | 73 (64) | 18 (10) | 1.0 / 2.9 / 13 | 19 |
+| tuning | 30 | 74 (64) | 18 (10) | 1.0 / 2.9 / 13 | 19 |
 | held-out | 24 | 61 (50) | 13 (4) | 1.5 / 2.5 / 9 | 16 |
+
+**Call-only references (sutra/505).** Re-run with the pre-fix and fixed
+binaries on fresh caches. The back-test cases are unchanged. The held-out
+volume is unchanged. The tuning sample gains one added unit (73 → 74) and
+one pair: sutra 2479d4a `refresh` vs `post_parse_sequence` (same change,
+9 runs, `db.set_git_availability(…)`). The old check suppressed it as
+`extracted`. `post_parse_sequence` names the type
+`crate::health::refresh::HealthSession`. The indexer stored the module
+segment `refresh` as a `read` reference and bound it to `fn refresh`.
+The pair is accurate: `refresh` repeats part of the sequence that
+`post_parse_sequence` kept.
 
 The volume condition (median review ≤ 2 dup groups after grouping) holds, so
 the advisory ships on by default, with no opt-in flag.
