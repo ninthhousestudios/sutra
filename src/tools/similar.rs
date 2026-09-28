@@ -28,7 +28,9 @@ pub struct SimilarArgs {
     /// Maximum number of results (default: 10 for symbol mode, all for duplicates mode)
     #[serde(default)]
     pub limit: Option<usize>,
-    /// Minimum similarity threshold 0.0-1.0 (default: 0.3 for symbol mode, 0.85 for duplicates mode)
+    /// Minimum similarity threshold 0.0-1.0 (default: 0.3 for symbol mode, 0.85 for duplicates mode).
+    /// In dup mode it filters only the matches that are not likely_duplicate: those are always
+    /// returned, even below it, since a rare shared code run fires on its own.
     #[serde(default)]
     pub threshold: Option<f64>,
     /// Minimum group size for duplicate detection (default: 3). Only used when symbol is omitted.
@@ -214,7 +216,7 @@ fn neighbours_json(n: &Neighbours, threshold: f64, limit: usize) -> serde_json::
                 "embed": m.embed,
                 "lex": m.lex,
                 "shared_runs": m.shared_runs,
-                "likely_duplicate": Neighbours::fires(m),
+                "likely_duplicate": n.likely_duplicate(m),
                 "shared": m.shared,
             })
         })

@@ -776,7 +776,9 @@ fn score(
     diff: &DiffUnits,
     report: &mut DupReport,
 ) -> Result<Vec<DupFinding>> {
-    let Corpus { mut docs, lexicon } = Corpus::build(
+    let Corpus {
+        mut docs, lexicon, ..
+    } = Corpus::build(
         workspace_root,
         registry,
         corpus,
@@ -932,6 +934,9 @@ fn rivals<'d>(
 struct Corpus<'c> {
     docs: Vec<Doc<'c>>,
     lexicon: Lexicon,
+    /// `always` passed the filters every other function had to: the
+    /// advisory would check it as a unit (sutra/511).
+    always_eligible: bool,
 }
 
 impl<'c> Corpus<'c> {
@@ -956,10 +961,14 @@ impl<'c> Corpus<'c> {
         let mut lexicon = Lexicon::default();
         let mut docs: Vec<Doc<'_>> = Vec::new();
         let mut counts: Vec<HashMap<usize, u32>> = Vec::new();
+        let mut always_eligible = false;
         for (function, f) in corpus.iter().enumerate() {
             let (start, end) = (to_line(f.hrr.start_line), to_line(f.hrr.end_line));
             let small = end + 1 - start < MIN_LINES;
-            if always != Some(f.hrr.symbol_id) && (small || is_test(f) || !keep(f)) {
+            let eligible = !small && !is_test(f) && keep(f);
+            if always == Some(f.hrr.symbol_id) {
+                always_eligible = eligible;
+            } else if !eligible {
                 continue;
             }
             let path = f.hrr.file_path.as_str();
@@ -1017,7 +1026,11 @@ impl<'c> Corpus<'c> {
                 lexicon.postings[id].push((i, w));
             }
         }
-        Self { docs, lexicon }
+        Self {
+            docs,
+            lexicon,
+            always_eligible,
+        }
     }
 }
 
@@ -1155,6 +1168,9 @@ fn load_embed<K: Ord>(
 pub struct Neighbours {
     functions: Vec<CorpusFunction>,
     query: usize,
+    /// The advisory would check the query at all: a non-test function of at
+    /// least `MIN_LINES` lines. Otherwise no match would fire (sutra/511).
+    query_checked: bool,
     /// Best first: every match that would fire in the advisory (`block >= 6`
     /// or `combo >= 0.5`), then the rest by combo.
     pub matches: Vec<Match>,
@@ -1173,14 +1189,21 @@ impl Neighbours {
         &self.functions[m.function]
     }
 
-    /// The match would fire in the advisory.
-    pub fn fires(m: &Match) -> bool {
-        m.shared_runs >= FIRE_BLOCK || m.combo >= FIRE_COMBO
+    /// The match would fire in the advisory: it would check the query, and
+    /// the match clears a firing bar.
+    pub fn likely_duplicate(&self, m: &Match) -> bool {
+        self.query_checked && fires(m)
     }
 }
 
+fn fires(m: &Match) -> bool {
+    m.shared_runs >= FIRE_BLOCK || m.combo >= FIRE_COMBO
+}
+
 /// Rank the functions `symbol_id` may duplicate. Keeps every match that
-/// would fire, and the rest down to `threshold` combo, up to `limit`.
+/// would fire, whatever its combo, and the rest down to `threshold` combo,
+/// up to `limit`: `threshold` filters only the matches the advisory would
+/// not report (sutra/511).
 /// `None` when `symbol_id` is not an indexed function.
 pub fn neighbours(
     db: &Db,
@@ -1216,7 +1239,11 @@ fn rank_neighbours(
         return Ok(None);
     };
     let mut incomplete = Vec::new();
-    let Corpus { mut docs, lexicon } = Corpus::build(
+    let Corpus {
+        mut docs,
+        lexicon,
+        always_eligible,
+    } = Corpus::build(
         workspace_root,
         registry,
         &functions,
@@ -1270,9 +1297,9 @@ fn rank_neighbours(
                 same_change: false,
                 shared: None,
             };
-            let fires = Neighbours::fires(&m);
-            if fires || m.combo >= threshold {
-                ranked.push((fires, d, m));
+            let fired = always_eligible && fires(&m);
+            if fired || m.combo >= threshold {
+                ranked.push((fired, d, m));
             }
         }
         ranked.sort_by(|(fa, _, a), (fb, _, b)| {
@@ -1296,6 +1323,7 @@ fn rank_neighbours(
     Ok(Some(Neighbours {
         functions,
         query,
+        query_checked: always_eligible,
         matches,
         candidates,
         incomplete,

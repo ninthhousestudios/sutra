@@ -734,3 +734,81 @@ fn default_mode_ranks_the_copy_above_a_same_shape_function() {
         .expect("the same-shape function is ranked, below the copy");
     assert_eq!(render["likely_duplicate"], false, "{result}");
 }
+
+/// A match that fires on a rare shared code run alone is returned however
+/// high the threshold, and marked, though its similarity is below it: the
+/// threshold filters only the matches the review would not report (sutra/511).
+#[test]
+fn dup_mode_keeps_a_block_match_below_the_threshold() {
+    let f = setup(&[(
+        "src/lib.rs",
+        concat!(
+            "pub fn sync_ledger(store: &Store, cutoff: u64) -> usize {\n",
+            "    let pending = store.pending_entries(cutoff);\n",
+            "    let merged = reconcile_batches(pending.chunks(64).map(Batch::from_slice).collect(), cutoff);\n",
+            "    store.commit(merged.len());\n",
+            "    merged.len()\n",
+            "}\n",
+            "pub fn draw_chart(canvas: &mut Canvas, series: &[f32]) {\n",
+            "    canvas.clear(Color::WHITE);\n",
+            "    let axis = Axis::fit(series.iter().copied().fold(0.0, f32::max));\n",
+            "    let merged = reconcile_batches(pending.chunks(64).map(Batch::from_slice).collect(), cutoff);\n",
+            "    canvas.plot(&axis, series);\n",
+            "    canvas.legend(\"load\");\n",
+            "}\n",
+        ),
+    )]);
+    parse(&f);
+
+    let result = similar(&f, Some("draw_chart"), None, Some(10), Some(0.99));
+    let matches = result["matches"].as_array().unwrap();
+    let ledger = matches
+        .iter()
+        .find(|m| m["symbol"] == "sync_ledger")
+        .unwrap_or_else(|| panic!("the block match is kept: {result}"));
+    assert!(ledger["similarity"].as_f64().unwrap() < 0.5, "{result}");
+    assert!(ledger["shared_runs"].as_u64().unwrap() >= 6, "{result}");
+    assert_eq!(ledger["likely_duplicate"], true, "{result}");
+    assert!(
+        matches.iter().all(|m| m["likely_duplicate"] == true),
+        "only firing matches pass a 0.99 threshold: {result}"
+    );
+}
+
+/// The review never checks a function under five lines or a test, so a
+/// query it would not check has no likely duplicate, even where the match
+/// clears the firing bar (sutra/511).
+#[test]
+fn dup_mode_marks_nothing_for_a_query_the_review_skips() {
+    let body = concat!(
+        "    let mut stmt = conn.prepare(WAIVER_SELECT).expect(\"invariant: static sql\");\n",
+        "    let rows = stmt.query_map([rule], waiver_from_row).expect(\"invariant: bound\");\n",
+        "    let waivers: Vec<Waiver> = rows.filter_map(|w| w.ok()).collect();\n",
+        "    waivers.into_iter().filter(|w| !w.expired()).collect()\n",
+    );
+    let source = format!(
+        "pub fn count_waivers(conn: &Conn, rule: &str) -> usize {{\n\
+         \x20   let mut stmt = conn.prepare(WAIVER_SELECT).expect(\"invariant: static sql\");\n\
+         \x20   stmt.query_map([rule], waiver_from_row).expect(\"invariant: bound\").count()\n}}\n\
+         pub fn load_waivers(conn: &Conn, rule: &str) -> Vec<Waiver> {{\n{body}}}\n\
+         #[test]\n\
+         fn loads_waivers() {{\n{body}}}\n"
+    );
+    let f = setup(&[("src/lib.rs", &source)]);
+    parse(&f);
+
+    for query in ["count_waivers", "loads_waivers"] {
+        let result = similar(&f, Some(query), None, Some(10), Some(0.0));
+        let m = result["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["symbol"] == "load_waivers")
+            .unwrap_or_else(|| panic!("{query}: load_waivers is ranked: {result}"));
+        assert!(
+            m["shared_runs"].as_u64().unwrap() >= 6 || m["similarity"].as_f64().unwrap() >= 0.5,
+            "{query}: the match clears the firing bar: {result}"
+        );
+        assert_eq!(m["likely_duplicate"], false, "{query}: {result}");
+    }
+}

@@ -1075,7 +1075,8 @@ impl SutraServer {
         description = "Find similar functions. With symbol, the mode says which question it \
             answers. 'dup' (default): does this logic already exist? Ranks likely duplicates by \
             identifiers (HRR embed + tf-idf) and rare shared code runs; likely_duplicate marks \
-            the ones the review-time dup check would report. 'embed': HRR cosine on AST shape \
+            the ones the review-time dup check would report, which are returned even below \
+            threshold. 'embed': HRR cosine on AST shape \
             plus identifiers. 'strip': same AST shape with identifiers ignored; nearly any two \
             small functions of similar shape score 0.7-1.0, so it is not a duplicate check. \
             Without symbol: finds all near-duplicate pattern families (groups of 3+ functions \
@@ -1086,9 +1087,15 @@ impl SutraServer {
         Parameters(args): Parameters<SimilarArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace).await?;
+        // mode=dup reads the corpus, stored vectors and symbol metadata in
+        // separate queries: a reparse between them remints ids (sutra/511).
+        // The guard moves into the blocking task so a cancelled request
+        // cannot release it mid-read (sutra/380).
+        let parse_guard = self.hold_parse_lock(&args.workspace).await?;
         // mode=dup reads and tokenizes every function's source per request:
         // off the async executor, so a slow query stalls no other tool (sutra/510).
         let (ctx, result) = tokio::task::spawn_blocking(move || {
+            let _parse_guard = parse_guard;
             let result = tools::similar::handle(
                 ctx.db(),
                 ctx.workspace_root(),
