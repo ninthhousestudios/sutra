@@ -347,6 +347,84 @@ lookup. Sketch only, not built here.
   code too. Three of the nine detectable cases need it.
 - **Grouping:** collapse items that share a (new file, matched file) pair.
 
+## Production path (sutra/469)
+
+Built as `src/tools/dup_exists.rs`. It reports on `sutra_review` and
+`sutra check` as `dup_exists`, is advisory only, and records firings as
+mechanism `dup_exists`. Reproduce with
+[`experiments/dup-exists/prod.py`](../experiments/dup-exists/prod.py)
+(`run`, then `cases` and `noise [--held-out] [-v]`). It runs `sutra check --diff <sha>` at
+each commit in a scratch worktree under an isolated HOME.
+
+**What differs from the prototype, and why:**
+
+- **The corpus is the index: the post-change tree.** A moved or deleted match
+  is absent, so `gone` needs no code. Added code is compared with the other
+  code the same change added or edited (sutra/456, 438, ai/197). A pair of
+  new copies is reported once. Each pair carries `same_change`.
+- **Units come from `classify_symbols` + `resolve_renames`.** A function is
+  moved only when its old copy disappears. The prototype dropped any new
+  function whose body matched an existing one exactly, so it missed
+  `PythonAdapter::extract_attributes`, a byte-identical copy of
+  `RustAdapter::extract_attributes` (df8712e).
+- **A modified function fires on block alone, counting only new runs.**
+  Its embed vector is the whole function. That makes combo measure the
+  function's standing family rather than the lines the change added. On swe
+  8f8d4b2, which re-indented every tab's `build`, modified units alone
+  produced 42 groups. A re-indented or moved block also shows up as added
+  lines, so a run the function already held before the change does not
+  count. All three modified back-test cases fire on block (18, 72 and 84 new
+  runs).
+- **`delegates` and `extracted` read the index's resolved references.**
+  An unresolved reference counts only when its qualifier names the target's
+  type or module, never on the short name alone. That fixes the harness's
+  ai/197 `build` false flag.
+- **Block is scored over the whole corpus.** The prototype's noise sweep
+  took block hits only from the top 40 functions by combo. Its back-test had
+  no such limit (sutra/437 fires at combo 0.24). Production matches the
+  back-test, so block-only idiom hits the sweep never saw now fire.
+- **Embed vectors.** An incremental refresh drops a changed file's stored
+  vectors until the next full parse. The check encodes the missing ones in
+  memory, changed files first, up to 2 000 functions. Past that it reports
+  `incomplete: embed cap`. More than 300 units reports
+  `incomplete: unit cap`, naming the unchecked functions. It also reports
+  incomplete, rather than clean, when the index cannot stand for the
+  reviewed side: the same guards as orphans, shared in `tools/advisory.rs`.
+
+**Back-test through the production path:** unchanged. explore/54, ai/197,
+sutra/418, 459, 437 and 261 fire. sutra/456 fires as a same-change modified
+unit (84 new shared runs). 438 and 401 do not, as before.
+
+**Volume** (rule unchanged, frozen before the held-out draw):
+
+| Sample | Commits | Added fns firing (vs pre-existing code) | Modified units firing (vs pre-existing) | Groups per review: median / mean / max | Commits with a group |
+|---|---|---|---|---|---|
+| tuning | 30 | 73 (64) | 18 (10) | 1.0 / 2.9 / 13 | 19 |
+| held-out | 24 | 61 (50) | 13 (4) | 1.5 / 2.5 / 9 | 16 |
+
+The volume condition (median review ≤ 2 dup groups after grouping) holds, so
+the advisory ships on by default, with no opt-in flag.
+
+**Against the prototype:** all 40 labelled held-out items still fire.
+Against pre-existing code, 50 added functions fire where the prototype's
+sweep counted 40 (44 with the sutra/503 encoder). That is worse. The 10
+extras break down as follows:
+
+- 2 real duplicates: `PythonAdapter::extract_attributes`, and
+  `being_type_for_name` vs `being_type_name`, already flagged in the
+  sutra/503 re-run.
+- 4 accurate family siblings: parallel adapter functions, and
+  `has_testcase_superclass` vs `has_annotation`.
+- 4 block-only idiom hits at combo 0.15–0.21 with 6–16 runs
+  (`row.get(n)?` field lists, `create_dir_all` + `write`, Flutter
+  `Column`/`Padding` layout).
+
+These come from scoring block over the whole corpus. No threshold separates
+them from sutra/437 (combo 0.24, 7 runs), and the rule was not retuned on
+the held-out sample. The other 11 added and 9 modified held-out units fire
+only against code the same change wrote. The design asks for that
+comparison; the prototype could not make it.
+
 ## Caveats
 
 - **Author-labelled.** One labeller (Claude). DUP vs FAM is a judgment call on

@@ -42,7 +42,7 @@ each classified by the mechanism that made it possible.
 | Mode | What goes wrong | Mechanism | Trigger | Back-test | Build |
 |---|---|---|---|---|---|
 | **PAR** (rewrite subtype) | A fix changes a pattern at 1 of N sites; the rest survive | "You fixed 1 of N": list the surviving instances of a pattern the diff rewrote or wrapped | review, advisory | 4/4 known diffs, 29/31 ordinary commits silent ([sibling-pattern-backtest.md](sibling-pattern-backtest.md)) | sutra/467 |
-| **DUP** | Logic re-implemented instead of reused; the copies drift | "This already exists": new functions vs the repo and vs the rest of the change (embed + lexical + rare shared token runs), grouped by file pair | review, advisory | 7/9 reachable introductions; fires on 42% of added functions, 20% of them real duplicates ([dup-exists-backtest.md](dup-exists-backtest.md)) | sutra/469 |
+| **DUP** | Logic re-implemented instead of reused; the copies drift | "This already exists": new functions vs the repo and vs the rest of the change (embed + lexical + rare shared token runs), grouped by file pair | review, advisory | 7/9 reachable introductions, reproduced by the production path; held-out median 1.5 file-pair groups per review; prototype: fires on 42% of added functions, 20% of them real duplicates ([dup-exists-backtest.md](dup-exists-backtest.md)) | sutra/469 |
 | **SWALLOW** | `.ok()`, `let _ =`, `catch (_)`: a failure reads as valid data | Swallowed-error ratchet: tier A blocks unless the site carries `// swallow: <reason>`; tier B is advisory | guard (A), review (B) | 14/14 lexical-idiom bugs; tier A 18/19 held-out sites real discards, 0.5 sites/commit ([swallow-ratchet-backtest.md](swallow-ratchet-backtest.md)) | sutra/472 (engine), sutra/486 (review, rules, tier A on) |
 | **UNWIRED** | Built ahead of its call site, never connected | Orphans: symbols the diff adds that nothing outside tests references (`added`), and symbols it strands by removing their last such reference (`orphaned`) | review, advisory | 3/3 reachable incidents (2 of them `orphaned`); held-out 13 items on 3 of 24 commits after a Dart parser fix, 9 of them staged ([orphans-backtest.md](orphans-backtest.md)) | sutra/483 |
 
@@ -55,9 +55,9 @@ done1. sutra/472 (swallow engine: justify marker, rename-robust match key) and
 3. sutra/483 (orphans), after 467, the 482 resolver fix and the 481 dead-API
    triage. It runs its back-test before building anything.
 4. sutra/471 (Dart encoder), then sutra/469 (dup-exists), then sutra/484
-   (strip-mode default, reusing 469's scorer). 469 has a volume condition:
+   (strip-mode default, reusing 469's scorer). 469 had a volume condition:
    after grouping, the median review shows at most 2 dup groups, or it ships
-   behind an opt-in flag.
+   behind an opt-in flag. It held (held-out median 1.5), so 469 ships on.
 
 ### Known gaps, deliberately not built
 
@@ -121,7 +121,11 @@ follows these or gives a reason.
    The orphans advisory records as mechanism `orphan`, kind `added` or
    `orphaned`, keyed by qualified name, at the declaration line: deleting the
    symbol reads `changed`, wiring it up reads `present`, so its acted-on rate
-   needs liveness at HEAD rather than the line proxy (sutra/483).
+   needs liveness at HEAD rather than the line proxy (sutra/483). The
+   dup-exists advisory records as mechanism `dup_exists`, kind `added` or
+   `modified`, one row per (unit, match) pair keyed `file:qualified_name` of
+   the match, at the unit's declaration line (added) or first added line
+   (modified) (sutra/469).
 
 ## What sutra is today
 
