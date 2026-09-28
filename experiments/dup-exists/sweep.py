@@ -22,6 +22,15 @@ HELD_OUT = {
 }
 
 
+# Python sample (sample.py seed 507, sutra/507). gandiva is agent-written,
+# qutebrowser is a mature human-written codebase. The rule is unchanged from
+# the Rust/Dart samples; nothing was tuned on this one.
+PYTHON = {
+    "/home/josh/nhs/soft/astrology/gandiva": "38f01dd 49e0fbe 28a3d42 88ef506 00ed24b 90c5e77 7b57f76 ab52571 39b4348 85269a2 a4d414b a09c7e1",
+    "/home/josh/soft/qutebrowser": "e5340c449 de50f30b9 d4f584684 8164682f7 bad903191 7e634a1e5 b50eba38d 57899d765 6e1ea89ca 3e3685b68 fe145b66c 9b7c2c6a6",
+}
+
+
 def rows(samples):
     for repo, shas in samples.items():
         for sha in shas.split():

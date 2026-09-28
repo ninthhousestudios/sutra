@@ -440,6 +440,83 @@ the held-out sample. The other 11 added and 9 modified held-out units fire
 only against code the same change wrote. The design asks for that
 comparison; the prototype could not make it.
 
+## Python (sutra/507)
+
+The rule was not retuned, and nothing was tuned on this sample. Sample:
+`sample.py <repo> 12 507` on two registered Python workspaces:
+
+- gandiva: 59 commits, written by an agent (Qt/PySide chart UI).
+- qutebrowser: 23k commits, a mature codebase written by humans.
+
+varuna360-core was skipped: its 25 commits are release-bot squashes, and only
+one passes the sample filter. Reproduce with `prod.py run --repo <path>` and
+`prod.py noise --python -v`. Labels are in
+[`labels-python.tsv`](../experiments/dup-exists/labels-python.tsv). The
+binary was built at 5842976. No run reported `incomplete`, `skipped` or
+`error`.
+
+**Volume:**
+
+| Sample | Commits | Units checked | Units fired: added / modified (vs pre-existing) | Groups per review: median / mean / max | Commits with a group |
+|---|---|---|---|---|---|
+| gandiva | 12 | 89 | 43 / 4 | **3.5** / 2.8 / 5 | 9 |
+| qutebrowser | 12 | 33 | 14 / 1 | 1.0 / 1.25 / 4 | 7 |
+| both | 24 | 122 | 57 / 5 (47 / 1) | 2.0 / 2.0 / 5 | 16 |
+
+**Labels** use the same scheme as the Rust/Dart samples. Each fired unit is
+labelled by the strongest pair reported for it.
+
+| Sample | Fired units | DUP | MIG | FAM | NOISE |
+|---|---|---|---|---|---|
+| gandiva | 47 | 10 (21%) | 14 | 13 | 10 (21%) |
+| qutebrowser | 15 | 2 (13%) | 4 | 4 | 5 (33%) |
+| both | 62 | **12 (19%)** | 18 | 17 | **15 (24%)** |
+| *Rust/Dart held-out, for comparison* | *40* | *8 (20%)* | *0* | *28* | *4 (10%)* |
+
+**Verdict.** The DUP rate matches Rust/Dart (19% vs 20%). The NOISE rate is
+about 2.4 times higher (24% vs 10%). The volume condition (median ≤ 2 groups
+per review) holds only for the pooled sample, and only just. It fails on the
+agent-written corpus (median 3.5). That corpus is also where 10 of the 12
+real duplicates are. Most of gandiva's volume is accurate:
+
+- 90c5e77 migrated a widget into a renderer: 14 MIG items in 3 groups.
+- The two renderers' hit tests and event handlers are copies: 4 DUP items in
+  ab52571 and 2 in 28a3d42.
+
+The advisory stays on for Python. Two Python-specific noise sources are worth
+removing before anyone reads the precision number as settled:
+
+1. **Docstrings are part of the lexical body.** The tree cut starts at the
+   `body` block, and the docstring is the block's first statement. A Rust
+   doc comment sits before the `{` and is dropped. Two NOISE items fire only
+   on shared docstring text:
+   - `SqlCompletionModel::data` vs `CompletionModel::flags`: "Override
+     QAbstractItemModel::… The QModelIndex to get item flags for".
+   - `change_filter::__init__`: "Save decorator arguments. Gets called on
+     parse-time…".
+
+   The docstring also inflates `session_delete` (44 runs). Follow-up:
+   sutra/509.
+2. **Embed scores assignment-only `__init__` bodies near 0.9.** `super().__init__(parent)` plus a list of
+   `self.x = …` has the same HRR shape whatever the attributes are. Four
+   NOISE items fire on embed 0.74–0.91 with lex ≤ 0.46 and 0 shared runs.
+   Rust constructors are struct literals and did not show this. No fix is
+   proposed yet: a combo floor on lex would also cut sutra/437-style block
+   hits, so it needs its own measurement.
+
+**Real duplicates found** (all 12 are in the label file). These are
+still live in gandiva HEAD:
+
+- `_sign_at`, `_planet_at`, `mousePressEvent` and `hoverMoveEvent` are
+  duplicated between `SouthIndianRenderer` and `WesternWheelRenderer`. They
+  belong in `ChartRenderer`. `hoverMoveEvent` has already drifted: 28a3d42
+  edited both copies, and only the western one tracks `_active_tip`.
+- `adjust_font` is repeated across 12+ widgets. Two copies already disagree
+  on the reset size (`14` vs `DEFAULT_FONT_SIZE`).
+
+In qutebrowser, 7e634a1e5 extracted `_parse_url_input` from `openurl` by
+copying `paste`'s newline-split heuristic, and `paste` kept its own copy.
+
 ## Caveats
 
 - **Author-labelled.** One labeller (Claude). DUP vs FAM is a judgment call on
@@ -457,5 +534,7 @@ comparison; the prototype could not make it.
 - **Two languages.** Rust and Dart only. The Python adapter was a *subject*
   in df8712e, not an indexed language here. Python bodies are cut at the
   parse tree's `body` field, not the first `{`/`=>` (sutra/506); that
-  changes no Rust/Dart score, so the numbers above stand, but Python volume
-  and precision are unmeasured.
+  changes no Rust/Dart score, so the numbers above stand. Python volume
+  and precision are measured separately, on a smaller sample (see "Python").
+  There is no Python back-test: none of the pinned DUP introductions are in
+  Python, so Python recall is unmeasured.

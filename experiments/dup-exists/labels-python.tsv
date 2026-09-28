@@ -1,0 +1,63 @@
+sha	function	label	note
+38f01dd	ChartScene::__init__	NOISE	vs ChartRenderer::__init__: super().__init__ + attribute assignments; embed 0.88, lex 0.46, 0 runs
+38f01dd	ChartScene::remove_info_widget	FAM	vs remove_overlay (same change): parallel registry removers, 3 lines each
+38f01dd	ChartScene::remove_overlay	NOISE	vs set_chart_style: shares only `if self._renderer: removeItem`
+38f01dd	ChartScene::set_chart	FAM	vs set_theme (same change): the same fan-out over renderer/overlays/widgets
+38f01dd	ChartScene::resize_chart	NOISE	vs set_chart_style: shape only
+28a3d42	SouthIndianRenderer::_sign_at	DUP	byte-identical to WesternWheelRenderer::_sign_at (same change); both live at HEAD, belongs in ChartRenderer
+28a3d42	WesternWheelRenderer::hoverMoveEvent	DUP	vs SouthIndianRenderer::hoverMoveEvent (same change); already drifting: only the western one tracks _active_tip; both live at HEAD
+28a3d42	WesternWheelRenderer::_sign_at	FAM	its reported pairs are _planet_at/_cusp_at siblings; the identical-copy pair is reported on the other side
+00ed24b	VargaActionWidget::__init__	NOISE	vs DashasWidget::__init__: QVBoxLayout/setContentsMargins boilerplate
+00ed24b	VargasWidget::__init__	FAM	vs NakshatrasWidget::__init__: sibling tree dock, QTreeWidget setup
+00ed24b	VargasWidget::_on_item_expanded	NOISE	vs update_from_chart (same change): shares one loop header
+7b57f76	InfoWidget::set_theme	FAM	vs ChartWheelWidget::_apply_info_label_style: rgba({c.red()},...) stylesheet formatting; a css helper would do, weakly actionable
+7b57f76	ChartOverlay::__init__	FAM	identical 5-line __init__ to ChartRenderer::__init__; parallel base classes. Arguable DUP (could share a base)
+90c5e77	WesternWheelRenderer::__init__	MIG	migration from ChartWheelWidget, retired in 49e0fbe
+90c5e77	WesternWheelRenderer::_cusp_at	MIG	same migration
+90c5e77	WesternWheelRenderer::_draw_arc_text	MIG	same migration
+90c5e77	WesternWheelRenderer::_tangent_rotation	MIG	same migration
+90c5e77	WesternWheelRenderer::_planet_at	MIG	same migration
+90c5e77	WesternWheelRenderer::_draw_center_image	MIG	same migration
+90c5e77	WesternWheelRenderer::_draw_skeleton	MIG	same migration
+90c5e77	WesternWheelRenderer::_draw_sign_names	MIG	same migration
+90c5e77	WesternWheelRenderer::_draw_house_ring	MIG	same migration
+90c5e77	WesternWheelRenderer::_geometry	MIG	same migration
+90c5e77	WesternWheelRenderer::_draw_planets	MIG	same migration
+90c5e77	WesternWheelRenderer::update_from_chart	MIG	same migration
+90c5e77	WesternWheelRenderer::hoverMoveEvent	MIG	same migration (vs mouseMoveEvent)
+90c5e77	WesternWheelRenderer::paint	MIG	same migration (vs paintEvent)
+ab52571	SouthIndianRenderer::__init__	FAM	vs WesternWheelRenderer::__init__: sibling renderer
+ab52571	SouthIndianRenderer::_draw_center	NOISE	vs _draw_grid (same change): QPainter setPen/setBrush idiom
+ab52571	SouthIndianRenderer::_draw_planets_in_cells	FAM	vs _draw_sign_labels (same change): the same cell lookup preamble
+ab52571	SouthIndianRenderer::_draw_ascendant_mark	FAM	vs _draw_planets_in_cells (same change): the same cell lookup preamble
+ab52571	SouthIndianRenderer::_planet_at	DUP	identical to WesternWheelRenderer::_planet_at bar the attribute name; both live at HEAD
+ab52571	SouthIndianRenderer::mousePressEvent	DUP	identical to WesternWheelRenderer::mousePressEvent; both live at HEAD, belongs in ChartRenderer
+ab52571	SouthIndianRenderer::update_from_chart	FAM	vs WesternWheelRenderer::update_from_chart: sibling override
+ab52571	SouthIndianRenderer::hoverMoveEvent	DUP	copy of WesternWheelRenderer::hoverMoveEvent; drifted in 28a3d42 (both edited, only one got _active_tip)
+ab52571	SouthIndianRenderer::_grid_geometry	FAM	vs WesternWheelRenderer::_geometry: sibling geometry
+ab52571	SouthIndianRenderer::paint	FAM	vs WesternWheelRenderer::paint: sibling override
+ab52571	SouthIndianRenderer::_extract_sign_data	DUP	planet filter (SKIP_PLANETS, outer planets) + tooltip info builder copied from ChartWheelWidget::_draw_planets, already trimmed
+ab52571	SouthIndianRenderer::_draw_grid	NOISE	vs WesternWheelRenderer::_draw_skeleton: QPainter idiom, combo 0.18
+39b4348	MainWindow::_make_popout_window	NOISE	vs InfoWidget::__init__: Qt window/layout boilerplate, combo 0.18
+39b4348	MainWindow::_pop_out_chart_entry	DUP	vs pop_out_varga (same change): chart label + title + popout registration repeated
+39b4348	MainWindow::on_chart_created	DUP	vs _on_chart_tab_changed: the save-current-tab-state block (widgets/options/dock_state/view_state) repeated, 46 runs
+39b4348	VargasWidget::adjust_font	DUP	vs YogasWidget::adjust_font (same change); one resets to 14, the other to DEFAULT_FONT_SIZE; 12+ copies of adjust_font live at HEAD
+85269a2	AspectLinesOverlay::__init__	NOISE	vs ChartOverlay::__init__: attribute assignments; embed 0.90, lex 0.20, 0 runs
+85269a2	AspectLinesOverlay::update_from_chart	FAM	vs SouthIndianRenderer::update_from_chart: sibling override. It also repeats the planet filter of _extract_sign_data, which was not the reported match
+85269a2	AspectLinesOverlay::paint	DUP	re-derives the wheel radii (side/2 - 18, FRAC_SIGN/PLANET/HOUSE) that WesternWheelRenderer::_geometry computes, 35 runs
+a4d414b	ChartPanel::__init__	NOISE	vs PlanetPanel::__init__: QVBoxLayout/header boilerplate
+e5340c449	CertificateErrorWrapper::__init__	DUP	vs NetworkManager::on_ssl_errors (same change): both compute host_tpl from reply.url() with the same try/except ValueError. Arguable (4 lines, mid-refactor)
+7e634a1e5	CommandDispatcher::_parse_url_input	DUP	the extracted helper copies paste's newline-split/force_search heuristic, and paste keeps its own copy
+57899d765	parse_args	FAM	vs mkvenv/testbrowser parse_args: argparse boilerplate
+6e1ea89ca	SqlCompletionModel::flags	MIG	copy of CompletionModel::flags; the old model was retired in e3a33ca42
+6e1ea89ca	SqlCompletionModel::__init__	MIG	vs CompletionModel::__init__, same migration
+6e1ea89ca	SqlCompletionModel::new_category	MIG	vs CompletionModel::new_category, same migration
+6e1ea89ca	SqlCompletionModel::data	NOISE	vs CompletionModel::flags: the 6 shared runs are docstring text ("Override QAbstractItemModel::... The QModelIndex to get item flags for")
+6e1ea89ca	SqlCompletionModel::first_item	FAM	vs last_item (same change): first/last pair
+6e1ea89ca	SqlCompletionModel::last_item	MIG	vs CompletionFilterModel::last_item, same migration
+6e1ea89ca	SqlCompletionModel::index	NOISE	vs parent (same change): Qt model overrides, shape only
+3e3685b68	change_filter::__init__	NOISE	vs prevent_exceptions::__init__: the 8 shared runs are the docstring ("Save decorator arguments. Gets called on parse-time...")
+fe145b66c	distribution	NOISE	vs HostBlocker::_read_hosts_file: open-and-iterate-lines idiom, combo 0.10
+9b7c2c6a6	session_save	NOISE	vs Quitter::quit: embed 0.69 on a kwargs-heavy signature shape, 0 runs
+9b7c2c6a6	session_delete	FAM	vs session_load (same change): the internal-session `name.startswith('_') and not force` guard; 44 runs, much of it docstring
+9b7c2c6a6	session_load	FAM	vs session_save (same change): sibling commands

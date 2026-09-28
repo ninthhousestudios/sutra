@@ -5,7 +5,7 @@ out at <sha>, so the index holds exactly the commit under review.
 
   prod.py run   [--repo PATH]   check every case and sample commit (cached)
   prod.py cases                 did each back-test case fire?
-  prod.py noise [--held-out] [-v]   volume per sample: units, pairs, groups
+  prod.py noise [--held-out|--python] [-v]   volume per sample: units, pairs, groups
 
 Uses $SUTRA_BIN (default: the release build of this checkout) under an
 isolated HOME ($ROOT/home), so the scratch workspaces and their firing logs
@@ -119,8 +119,10 @@ def cases():
         print(f"{r['case']:16s} {r['intro_commit'][:8]} {verdict}  {extra[:120]}")
 
 
-def noise(held_out, verbose):
-    samples = sweep.HELD_OUT if held_out else sweep.SAMPLES
+def noise(sample, verbose):
+    samples = {"held-out": sweep.HELD_OUT, "python": sweep.PYTHON}.get(
+        sample, sweep.SAMPLES
+    )
     per_commit = []
     added_units = modified_units = 0
     existing = defaultdict(set)
@@ -180,7 +182,7 @@ if __name__ == "__main__":
                     "-",
                 ):
                     todo[r["repo_path"]].append(r["intro_commit"])
-        for s in (sweep.SAMPLES, sweep.HELD_OUT):
+        for s in (sweep.SAMPLES, sweep.HELD_OUT, sweep.PYTHON):
             for repo, shas in s.items():
                 todo[repo].extend(shas.split())
         for repo, shas in todo.items():
@@ -194,4 +196,5 @@ if __name__ == "__main__":
     elif a[0] == "cases":
         cases()
     elif a[0] == "noise":
-        noise("--held-out" in a, "-v" in a)
+        sample = next((f[2:] for f in a if f in ("--held-out", "--python")), None)
+        noise(sample, "-v" in a)
