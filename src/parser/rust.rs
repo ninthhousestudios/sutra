@@ -1192,7 +1192,13 @@ fn classify_path_segment(node: Node, anc: &[Node], src: &[u8]) -> Option<PathRef
         .child_by_field_name("name")
         .is_some_and(|n| n.id() == node.id());
     let outer = up(anc, 1)?;
-    if !is_name || outer.kind() == "scoped_identifier" {
+    // A path that is itself the prefix of a longer path, in expression
+    // (`m::T::new`) or type (`crate::m::T`) position, ends in a module or
+    // type segment, not the reference.
+    let is_prefix = outer
+        .child_by_field_name("path")
+        .is_some_and(|p| p.id() == scoped.id());
+    if !is_name || is_prefix {
         return type_path_segment(node, src);
     }
     let context_kind = match outer.kind() {
@@ -2552,6 +2558,26 @@ fn setup() {
             RefContextKind::TypeUse
         );
         assert!(refs_named(&r, "calls").is_empty());
+    }
+
+    /// sutra/508: a module segment of a type path (`crate::m::T`) is not a
+    /// read of a same-named function `m::m`.
+    #[test]
+    fn module_segment_of_a_type_path_is_not_a_read() {
+        let src = "mod m { pub fn m() {} pub struct T; pub trait Tr {} }\n\
+                   struct X;\n\
+                   impl crate::m::Tr for X {}\n\
+                   fn f(_: &crate::m::T, _: Vec<crate::m::T>) -> crate::m::T { crate::m::T }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let m_refs: Vec<_> = refs_named(&r, "m")
+            .iter()
+            .map(|x| (x.line, x.context_kind, x.qualifier.as_deref()))
+            .collect();
+        assert!(
+            m_refs.is_empty(),
+            "module segment extracted as refs: {m_refs:?}"
+        );
+        assert!(refs_named(&r, "T").len() >= 3);
     }
 
     #[test]
