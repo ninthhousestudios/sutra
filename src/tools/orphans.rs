@@ -27,10 +27,10 @@ use crate::db::Db;
 use crate::db::firings::{FiringContext, FiringRecord};
 use crate::db::orphans::{Liveness, SymbolSite};
 use crate::error::Result;
-use crate::freshness::{self, FileStatus};
 use crate::git;
-use crate::parser::adapter::{LanguageAdapter, LanguageRegistry, ParserPool};
+use crate::parser::adapter::{LanguageRegistry, ParserPool};
 use crate::parser::{self, ParseResult, flatten_symbols};
+use crate::tools::advisory::{self, adapter_for, dirty_outside_diff, index_mismatch};
 use crate::tools::firings::ReviewedPatch;
 use crate::tools::review::DiffScope;
 use crate::tools::sibling_pattern::read_sides;
@@ -123,11 +123,6 @@ fn unwired(sym: &SymbolSite, liveness: Liveness) -> bool {
         && (liveness.test_refs == 0 || !sym.short_name.to_ascii_lowercase().contains("test"))
 }
 
-fn adapter_for<'r>(registry: &'r LanguageRegistry, path: &str) -> Option<&'r dyn LanguageAdapter> {
-    let ext = Path::new(path).extension()?.to_str()?;
-    registry.adapter_for_extension(ext)
-}
-
 /// A reference the diff removed from non-test code: `(name, qualifier)`.
 type RemovedRef = (String, Option<String>);
 
@@ -137,7 +132,11 @@ type RemovedRef = (String, Option<String>);
 /// one definition of its name (`unique`): with no parse of the base tree,
 /// removing `helper()` says nothing about which of two `helper`s it called,
 /// and an already-dead one would be reported as orphaned by this change.
-fn qualifier_fits(qualifier: Option<&str>, sym: &SymbolSite, unique: bool) -> bool {
+pub(crate) fn qualifier_fits(
+    qualifier: Option<&str>,
+    (qualified_name, path): (&str, &str),
+    unique: bool,
+) -> bool {
     let Some(q) = qualifier else {
         return unique;
     };
@@ -145,11 +144,10 @@ fn qualifier_fits(qualifier: Option<&str>, sym: &SymbolSite, unique: bool) -> bo
     if matches!(last, "self" | "Self" | "super" | "crate") {
         return unique;
     }
-    let parent = sym
-        .qualified_name
+    let parent = qualified_name
         .rsplit_once("::")
         .map(|(p, _)| p.rsplit("::").next().unwrap_or(p));
-    let stem = Path::new(&sym.path).file_stem().and_then(|s| s.to_str());
+    let stem = Path::new(path).file_stem().and_then(|s| s.to_str());
     parent == Some(last) || stem == Some(last)
 }
 
@@ -170,83 +168,6 @@ fn removed_refs(parse: ParseResult, ranges: &[std::ops::Range<usize>], out: &mut
             })
             .map(|r| (r.name, r.qualifier)),
     );
-}
-
-/// Why the index cannot stand for the reviewed side of `path`, if it cannot:
-/// indexed before its last edit, or the reviewed content (a commit, the
-/// staged index) differs from the worktree the index holds.
-fn index_mismatch(db: &Db, workspace_root: &Path, scope: &DiffScope, path: &str) -> Option<String> {
-    let status = match db.file_by_path(path) {
-        Ok(Some(f)) => freshness::check_file(workspace_root, path, &f.last_parsed),
-        Ok(None) => return Some(format!("{path}: not in the index")),
-        Err(e) => return Some(format!("{path}: {e}")),
-    };
-    if !matches!(status, FileStatus::Fresh) {
-        return Some(format!("{path}: edited since it was indexed"));
-    }
-    let head = scope.head_revision.as_deref()?;
-    let reviewed = git::file_content_on_side(workspace_root, Some(head), path);
-    let worktree = git::file_content_on_side(workspace_root, None, path);
-    match (reviewed, worktree) {
-        (Ok(a), Ok(b)) if a == b => None,
-        (Ok(_), Ok(_)) => Some(format!(
-            "{path}: the worktree differs from the reviewed side"
-        )),
-        (Err(e), _) | (_, Err(e)) => Some(format!("{path}: {e}")),
-    }
-}
-
-/// Why liveness read from the index may not be the reviewed side's, outside
-/// the diff: `index_mismatch` covers the changed files, but the index holds
-/// the whole worktree, so an uncommitted caller elsewhere hides an orphan and
-/// a deleted one invents one. Only a staged or HEAD review can differ; an
-/// unstaged review is the worktree.
-fn dirty_outside_diff(
-    db: &Db,
-    workspace_root: &Path,
-    scope: &DiffScope,
-    registry: &LanguageRegistry,
-) -> Result<Option<String>> {
-    let Some(head) = scope.head_revision.as_deref() else {
-        return Ok(None);
-    };
-    let in_diff: HashSet<&str> = scope
-        .entries
-        .iter()
-        .flat_map(|e| [e.path.as_str(), e.base_path()])
-        .collect();
-    let changed = git::git_diff_entries_to_worktree(workspace_root, head)?;
-    let untracked = git::untracked_files(workspace_root)?;
-    let mut dirty = BTreeSet::new();
-    for path in changed
-        .iter()
-        .flat_map(|e| [e.path.as_str(), e.base_path()])
-        .chain(untracked.iter().map(String::as_str))
-    {
-        if in_diff.contains(path) || dirty.contains(path) {
-            continue;
-        }
-        if let Some(adapter) = adapter_for(registry, path)
-            && db.indexes_language(adapter.language_id())?
-        {
-            dirty.insert(path);
-        }
-    }
-    if dirty.is_empty() {
-        return Ok(None);
-    }
-    const SHOWN: usize = 5;
-    let mut listed: Vec<&str> = dirty.iter().copied().take(SHOWN).collect();
-    let more = dirty.len().saturating_sub(SHOWN);
-    let tail = format!("(+{more} more)");
-    if more > 0 {
-        listed.push(&tail);
-    }
-    Ok(Some(format!(
-        "{} indexed file(s) outside the diff differ in the worktree from the reviewed side: {}",
-        dirty.len(),
-        listed.join(", ")
-    )))
 }
 
 /// Find the orphans of `scope`. [`run_advisory`] first checks that the index
@@ -376,7 +297,9 @@ pub fn analyze(
             if added_ids.contains(&sym.id)
                 || reported.contains(&sym.id)
                 || !reportable(&sym, &is_test_path)
-                || !qualifiers.iter().any(|q| qualifier_fits(*q, &sym, unique))
+                || !qualifiers
+                    .iter()
+                    .any(|q| qualifier_fits(*q, (&sym.qualified_name, &sym.path), unique))
             {
                 continue;
             }
@@ -504,16 +427,9 @@ pub fn run_advisory(
     at: (&str, &str),
     patch: std::result::Result<&ReviewedPatch, &str>,
 ) -> Advisory {
-    // The index holds the worktree. A diff that ends at the index or at HEAD
-    // is close enough, file by file (`index_mismatch`); a historical commit
-    // is not, anywhere in the tree.
-    if let Some(rev) = scope.head_revision.as_deref().filter(|r| !r.is_empty())
-        && git::head_commit_hash(workspace_root).as_deref() != Some(rev)
-    {
+    if let Some(skipped) = advisory::index_cannot_hold(workspace_root, scope) {
         return Advisory {
-            skipped: Some(format!(
-                "the index holds the worktree, not {rev}; review a diff that ends at HEAD"
-            )),
+            skipped: Some(skipped),
             ..Advisory::default()
         };
     }
@@ -561,24 +477,11 @@ fn record_firings(
         anchor_commit: anchor.as_deref(),
     };
     let event_id = crate::tools::firings::resolve_event(db, workspace_root, &ctx, patch)?;
-    let mut texts: BTreeMap<&str, String> = BTreeMap::new();
-    let mut snippets = Vec::with_capacity(report.findings.len());
-    for f in &report.findings {
-        if !texts.contains_key(f.file.as_str()) {
-            let text =
-                git::file_content_on_side(workspace_root, scope.head_revision.as_deref(), &f.file)?
-                    .unwrap_or_default();
-            texts.insert(&f.file, text);
-        }
-        let line = usize::try_from(f.line).expect("invariant: a source line number is positive");
-        let snippet = texts[f.file.as_str()]
-            .lines()
-            .nth(line.saturating_sub(1))
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        snippets.push(snippet);
-    }
+    let snippets = advisory::line_snippets(
+        workspace_root,
+        scope,
+        report.findings.iter().map(|f| (f.file.as_str(), f.line)),
+    )?;
     let records: Vec<FiringRecord<'_>> = report
         .findings
         .iter()
@@ -621,24 +524,46 @@ mod tests {
     #[test]
     fn qualifier_names_the_type_or_the_module_file() {
         let method = site("Telemetry::start", "src/ai_metrics.rs");
-        assert!(qualifier_fits(Some("Telemetry"), &method, false));
         assert!(qualifier_fits(
-            Some("crate::ai_metrics::Telemetry"),
-            &method,
+            Some("Telemetry"),
+            (&method.qualified_name, &method.path),
             false
         ));
-        assert!(!qualifier_fits(Some("Pricing"), &method, true));
+        assert!(qualifier_fits(
+            Some("crate::ai_metrics::Telemetry"),
+            (&method.qualified_name, &method.path),
+            false
+        ));
+        assert!(!qualifier_fits(
+            Some("Pricing"),
+            (&method.qualified_name, &method.path),
+            true
+        ));
         let free = site("handle", "src/tools/dead.rs");
-        assert!(qualifier_fits(Some("tools::dead"), &free, false));
-        assert!(!qualifier_fits(Some("tools::resolve"), &free, true));
+        assert!(qualifier_fits(
+            Some("tools::dead"),
+            (&free.qualified_name, &free.path),
+            false
+        ));
+        assert!(!qualifier_fits(
+            Some("tools::resolve"),
+            (&free.qualified_name, &free.path),
+            true
+        ));
     }
 
     #[test]
     fn an_unscoped_qualifier_fits_only_the_one_definition() {
         let method = site("Telemetry::start", "src/ai_metrics.rs");
         for q in [None, Some("Self"), Some("crate"), Some("self")] {
-            assert!(qualifier_fits(q, &method, true), "{q:?}");
-            assert!(!qualifier_fits(q, &method, false), "{q:?}");
+            assert!(
+                qualifier_fits(q, (&method.qualified_name, &method.path), true),
+                "{q:?}"
+            );
+            assert!(
+                !qualifier_fits(q, (&method.qualified_name, &method.path), false),
+                "{q:?}"
+            );
         }
     }
 

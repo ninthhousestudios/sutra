@@ -1,3 +1,4 @@
+pub mod advisory;
 pub mod calls;
 pub mod change_signals;
 pub mod check;

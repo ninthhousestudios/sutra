@@ -30,6 +30,16 @@ pub struct HrrSymbolRow {
     pub end_col: i64,
 }
 
+/// A function or method as the review-time dup check reads it
+/// (`tools::dup_exists`): the encoder's row plus identity and flags.
+pub struct CorpusFunction {
+    pub hrr: HrrSymbolRow,
+    pub qualified_name: String,
+    pub short_name: String,
+    pub kind: String,
+    pub flags: i64,
+}
+
 pub struct HrrChangedFile {
     pub file_id: i64,
     pub path: String,
@@ -58,6 +68,29 @@ fn hrr_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HrrSymbolRow> {
 }
 
 impl Db {
+    /// Every function and method, in id order.
+    pub fn function_corpus(&self) -> Result<Vec<CorpusFunction>> {
+        let conn = self.conn.lock();
+        let sql = HRR_SYMBOL_SELECT.replacen(
+            "\n FROM symbols s",
+            ", s.qualified_name, s.short_name, s.kind, s.flags\n FROM symbols s",
+            1,
+        ) + " ORDER BY s.id";
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(CorpusFunction {
+                    hrr: hrr_symbol_row(row)?,
+                    qualified_name: row.get(8)?,
+                    short_name: row.get(9)?,
+                    kind: row.get(10)?,
+                    flags: row.get(11)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn function_symbols_for_hrr(&self) -> Result<Vec<HrrSymbolRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(HRR_SYMBOL_SELECT)?;

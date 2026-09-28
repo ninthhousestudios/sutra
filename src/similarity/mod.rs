@@ -6,6 +6,7 @@ pub mod hrr;
 pub mod minhash;
 pub mod search;
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,7 +22,7 @@ use crate::parser::adapter::{LanguageRegistry, default_registry};
 /// `encode_subtree` to recurse its entire tree-sitter AST, a hard RSS/CPU spike
 /// with no similarity payoff — such functions are unique boilerplate, not
 /// members of a pattern family (sutra/324).
-const MAX_HRR_SYMBOL_LINES: i64 = 2_000;
+pub(crate) const MAX_HRR_SYMBOL_LINES: i64 = 2_000;
 
 /// (symbol_id, mode, quantized vector blob) rows destined for `hrr_vectors`.
 type VectorRow = (i64, String, Vec<u8>);
@@ -130,61 +131,26 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
         .map(|f| (f.file_id, f.content_hash.as_str()))
         .collect();
 
-    let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (i, sym) in symbols.iter().enumerate() {
-        by_file.entry(&sym.file_path).or_default().push(i);
-    }
-    let files: Vec<Vec<usize>> = by_file.into_values().collect();
-
-    // Encoding is embarrassingly parallel now that the codebook is
-    // content-addressed (sutra/327): each worker gets its own memo cache and
-    // produces identical vectors regardless of scheduling. Workers pull file
-    // indices from a shared counter so a few giant files don't skew a static
-    // partition.
-    let n_workers = hrr_worker_count(files.len());
-    let next = AtomicUsize::new(0);
-    let worker_results: Vec<Result<(Vec<VectorRow>, Vec<i64>)>> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..n_workers)
-            .map(|_| {
-                s.spawn(|| {
-                    let registry = default_registry();
-                    let mut cb = codebook::Codebook::new();
-                    let mut vectors = Vec::new();
-                    let mut completed_file_ids = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(indices) = files.get(i) else {
-                            break;
-                        };
-                        if let Some(file_id) = encode_file(
-                            workspace_root,
-                            &registry,
-                            &symbols,
-                            indices,
-                            mode,
-                            &mut cb,
-                            &mut vectors,
-                        )? {
-                            completed_file_ids.push(file_id);
-                        }
-                    }
-                    Ok((vectors, completed_file_ids))
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("invariant: HRR encode worker panicked"))
-            .collect()
-    });
-
     let mut vectors: Vec<VectorRow> = Vec::new();
     let mut completed_file_ids: Vec<i64> = Vec::new();
-    for r in worker_results {
-        let (v, c) = r?;
+    for_each_file_parallel(&symbols, |registry, indices, cb| {
+        let mut out = Vec::new();
+        let done = encode_file(
+            workspace_root,
+            registry,
+            &symbols,
+            indices,
+            mode,
+            cb,
+            &mut out,
+        )?;
+        Ok((out, done))
+    })?
+    .into_iter()
+    .for_each(|(v, done)| {
         vectors.extend(v);
-        completed_file_ids.extend(c);
-    }
+        completed_file_ids.extend(done);
+    });
 
     let file_hashes: Vec<(i64, &str)> = completed_file_ids
         .iter()
@@ -211,6 +177,83 @@ fn hrr_worker_count(file_count: usize) -> usize {
         .clamp(1, file_count.max(1))
 }
 
+/// Run `work` over `symbols` grouped by file, in parallel. Encoding is
+/// embarrassingly parallel now that the codebook is content-addressed
+/// (sutra/327): each worker gets its own memo cache and produces identical
+/// vectors regardless of scheduling. Workers pull file indices from a shared
+/// counter so a few giant files don't skew a static partition.
+fn for_each_file_parallel<S: Borrow<HrrSymbolRow> + Sync, T: Send>(
+    symbols: &[S],
+    work: impl Fn(&LanguageRegistry, &[usize], &mut codebook::Codebook) -> Result<T> + Sync,
+) -> Result<Vec<T>> {
+    let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, sym) in symbols.iter().enumerate() {
+        by_file.entry(&sym.borrow().file_path).or_default().push(i);
+    }
+    let files: Vec<Vec<usize>> = by_file.into_values().collect();
+    let n_workers = hrr_worker_count(files.len());
+    let next = AtomicUsize::new(0);
+    let worker_results: Vec<Result<Vec<T>>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..n_workers)
+            .map(|_| {
+                s.spawn(|| {
+                    let registry = default_registry();
+                    let mut cb = codebook::Codebook::new();
+                    let mut out = Vec::new();
+                    while let Some(indices) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        out.push(work(&registry, indices, &mut cb)?);
+                    }
+                    Ok(out)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("invariant: HRR encode worker panicked"))
+            .collect()
+    });
+    let mut out = Vec::new();
+    for r in worker_results {
+        out.extend(r?);
+    }
+    Ok(out)
+}
+
+/// One file's source and tree, as the encoder reads it: `None` when the file
+/// is unreadable, in an unknown language, or unparseable.
+fn parse_for_hrr(
+    workspace_root: &Path,
+    registry: &LanguageRegistry,
+    path: &str,
+    language: &str,
+) -> Result<Option<(String, tree_sitter::Tree)>> {
+    // swallow: an unreadable file is skipped, not recorded done, so the next parse retries it
+    let Ok(source) = std::fs::read_to_string(workspace_root.join(path)) else {
+        return Ok(None);
+    };
+    let Some(adapter) = registry.adapter_for_language(language) else {
+        return Ok(None);
+    };
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&adapter.grammar())
+        .map_err(|e| SutraError::Parse(format!("HRR re-parse grammar: {e}")))?;
+    Ok(parser.parse(&source, None).map(|tree| (source, tree)))
+}
+
+/// The node `sym` spans, unless it is too long to encode.
+fn symbol_node<'t>(
+    tree: &'t tree_sitter::Tree,
+    sym: &HrrSymbolRow,
+) -> Option<tree_sitter::Node<'t>> {
+    if sym.end_line - sym.start_line > MAX_HRR_SYMBOL_LINES {
+        return None;
+    }
+    let start = tree_sitter::Point::new((sym.start_line - 1) as usize, sym.start_col as usize);
+    let end = tree_sitter::Point::new((sym.end_line - 1) as usize, sym.end_col as usize);
+    tree.root_node().descendant_for_point_range(start, end)
+}
+
 /// Encode all eligible symbols of one file. Returns the file id when the file
 /// was fully processed (so its content hash may be recorded), `None` when the
 /// file was skipped (unreadable, unknown language, or unparseable) — a skip
@@ -224,36 +267,15 @@ fn encode_file(
     cb: &mut codebook::Codebook,
     vectors: &mut Vec<VectorRow>,
 ) -> Result<Option<i64>> {
-    let full_path = workspace_root.join(&symbols[indices[0]].file_path);
-    let source = match std::fs::read_to_string(&full_path) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
+    let first = &symbols[indices[0]];
+    let Some((source, tree)) =
+        parse_for_hrr(workspace_root, registry, &first.file_path, &first.language)?
+    else {
+        return Ok(None);
     };
-
-    let lang = &symbols[indices[0]].language;
-    let adapter = match registry.adapter_for_language(lang) {
-        Some(a) => a,
-        None => return Ok(None),
-    };
-
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&adapter.grammar())
-        .map_err(|e| SutraError::Parse(format!("HRR re-parse grammar: {e}")))?;
-
-    let tree = match parser.parse(&source, None) {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-
     for &idx in indices {
         let sym = &symbols[idx];
-        if sym.end_line - sym.start_line > MAX_HRR_SYMBOL_LINES {
-            continue;
-        }
-        let start = tree_sitter::Point::new((sym.start_line - 1) as usize, sym.start_col as usize);
-        let end = tree_sitter::Point::new((sym.end_line - 1) as usize, sym.end_col as usize);
-        if let Some(node) = tree.root_node().descendant_for_point_range(start, end) {
+        if let Some(node) = symbol_node(&tree, sym) {
             let strip = encoder::encode_subtree(&node, source.as_bytes(), cb, false);
             vectors.push((sym.symbol_id, "strip".into(), strip.to_bytes()));
 
@@ -263,8 +285,36 @@ fn encode_file(
             }
         }
     }
+    Ok(Some(first.file_id))
+}
 
-    Ok(Some(symbols[indices[0]].file_id))
+/// Embed vectors for `symbols`, encoded from the worktree without touching
+/// the index: the review-time dup check needs them for files an incremental
+/// refresh re-indexed, whose stored vectors wait for the next full parse.
+/// Each vector goes through the storage quantization so it compares like a
+/// stored one. A symbol whose file cannot be read or parsed, or that is too
+/// long to encode, is absent from the result.
+pub fn encode_embed_vectors(
+    workspace_root: &Path,
+    symbols: &[&HrrSymbolRow],
+) -> Result<HashMap<i64, hrr::HrrVec>> {
+    let per_file = for_each_file_parallel(symbols, |registry, indices, cb| {
+        let first = symbols[indices[0]];
+        let mut out = Vec::new();
+        if let Some((source, tree)) =
+            parse_for_hrr(workspace_root, registry, &first.file_path, &first.language)?
+        {
+            for &idx in indices {
+                let sym = symbols[idx];
+                if let Some(node) = symbol_node(&tree, sym) {
+                    let embed = encoder::encode_subtree(&node, source.as_bytes(), cb, true);
+                    out.push((sym.symbol_id, hrr::HrrVec::from_bytes(&embed.to_bytes())));
+                }
+            }
+        }
+        Ok(out)
+    })?;
+    Ok(per_file.into_iter().flatten().collect())
 }
 
 pub fn compute_pattern_families(db: &Db) -> Result<usize> {
