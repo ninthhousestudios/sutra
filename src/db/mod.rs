@@ -383,6 +383,22 @@ pub struct InsertRefParams<'a> {
     pub qualifier: Option<&'a str>,
 }
 
+/// `refs.resolution_method` of a binding made by short name alone
+/// (`resolver::ResolutionMethod::NameOnly`, sutra/513). Such a row keeps its
+/// `target_symbol_id`, so liveness (`find_dead_symbols`, orphans) still counts
+/// it, but every dependency read here returns it as an unresolved ref named
+/// after its target: it is a guess, not an edge.
+pub const NAME_ONLY_RESOLUTION: &str = "name_only";
+
+/// A [`RefRow`] SELECT over `refs r` that reads a name-only binding as
+/// unresolved; bind [`NAME_ONLY_RESOLUTION`] as `?1`.
+const EDGE_REF_SELECT: &str = "SELECT r.id, r.file_id, \
+       CASE WHEN r.resolution_method IS ?1 THEN NULL ELSE r.target_symbol_id END, \
+       COALESCE(r.unresolved_name, CASE WHEN r.resolution_method IS ?1 \
+            THEN (SELECT short_name FROM symbols WHERE id = r.target_symbol_id) END), \
+       r.line, r.col, r.context_kind, r.resolved_local_target, r.receiver, r.qualifier \
+     FROM refs r";
+
 #[derive(Debug, Clone)]
 pub struct RefRow {
     pub id: i64,
@@ -1856,27 +1872,40 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Return all refs that target a given symbol.
+    /// Return all refs that target a given symbol, name-only bindings
+    /// excepted ([`NAME_ONLY_RESOLUTION`]; [`Self::count_name_only_calls_to_symbol`]
+    /// counts those).
     pub fn find_refs_to_symbol(&self, symbol_id: i64) -> Result<Vec<RefRow>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver, qualifier
-             FROM refs WHERE target_symbol_id = ?1",
-        )?;
-        let rows: rusqlite::Result<Vec<RefRow>> =
-            stmt.query_map(params![symbol_id], map_ref_row)?.collect();
+        let mut stmt = conn.prepare(&format!(
+            "{EDGE_REF_SELECT} WHERE r.target_symbol_id = ?2 AND r.resolution_method IS NOT ?1"
+        ))?;
+        let rows: rusqlite::Result<Vec<RefRow>> = stmt
+            .query_map(params![NAME_ONLY_RESOLUTION, symbol_id], map_ref_row)?
+            .collect();
         Ok(rows?)
     }
 
-    /// Return all refs contained in a given file.
+    /// Calls bound to `symbol_id` by name alone: same-named dot-calls whose
+    /// receiver type is unknown, which may or may not reach it.
+    pub fn count_name_only_calls_to_symbol(&self, symbol_id: i64) -> Result<usize> {
+        let conn = self.conn.lock();
+        Ok(conn
+            .prepare_cached(
+                "SELECT COUNT(*) FROM refs WHERE target_symbol_id = ?1 \
+                 AND resolution_method IS ?2 AND context_kind = 'call'",
+            )?
+            .query_row(params![symbol_id, NAME_ONLY_RESOLUTION], |r| r.get(0))?)
+    }
+
+    /// Return all refs contained in a given file, a name-only binding read
+    /// as unresolved ([`NAME_ONLY_RESOLUTION`]).
     pub fn find_refs_in_file(&self, file_id: i64) -> Result<Vec<RefRow>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver, qualifier
-             FROM refs WHERE file_id = ?1",
-        )?;
-        let rows: rusqlite::Result<Vec<RefRow>> =
-            stmt.query_map(params![file_id], map_ref_row)?.collect();
+        let mut stmt = conn.prepare(&format!("{EDGE_REF_SELECT} WHERE r.file_id = ?2"))?;
+        let rows: rusqlite::Result<Vec<RefRow>> = stmt
+            .query_map(params![NAME_ONLY_RESOLUTION, file_id], map_ref_row)?
+            .collect();
         Ok(rows?)
     }
 

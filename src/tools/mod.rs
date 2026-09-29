@@ -50,6 +50,28 @@ use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
 use crate::workspace::WorkspaceEntry;
 
+/// Say how many calls bind to a symbol by name alone (sutra/513): dot-calls
+/// with a std method name and an unknown receiver type. Caller lists and
+/// counts leave them out, so a tool reporting callers adds
+/// `name_only_callers` and a note naming the next step; nothing when none.
+pub(crate) fn add_name_only_callers(
+    db: &Db,
+    symbol_id: i64,
+    short_name: &str,
+    result: &mut serde_json::Value,
+) -> Result<()> {
+    let count = db.count_name_only_calls_to_symbol(symbol_id)?;
+    if count > 0 {
+        result["name_only_callers"] = serde_json::json!(count);
+        result["name_only_note"] = serde_json::json!(format!(
+            "{count} `.{short_name}()` calls are not counted: std has a method of that \
+             name and the receiver type is unknown, so they may not call this. \
+             Check the receivers with `rg '\\.{short_name}\\('`."
+        ));
+    }
+    Ok(())
+}
+
 pub fn get_or_open_db(
     cache: &Mutex<HashMap<String, Arc<Db>>>,
     workspace: &WorkspaceEntry,

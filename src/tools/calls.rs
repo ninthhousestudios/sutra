@@ -78,13 +78,17 @@ pub fn handle(
         collect_callers(db, &sym, depth)?
     };
 
-    Ok(json!({
+    let mut result = json!({
         "symbol": sym.qualified_name,
         "kind": sym.kind,
         "direction": direction,
         "depth": depth,
         "entries": entries,
-    }))
+    });
+    if direction != "callees" {
+        super::add_name_only_callers(db, sym.id, &sym.short_name, &mut result)?;
+    }
+    Ok(result)
 }
 
 fn collect_callers(

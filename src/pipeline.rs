@@ -541,8 +541,10 @@ fn resolve_file_refs(
         })
         .collect();
 
-    // Preserve the carried-through resolved rows verbatim (resolution_method is
-    // write-only diagnostic metadata, not read by any query, so it is dropped).
+    // Preserve the carried-through resolved rows verbatim. Their
+    // resolution_method is dropped: the only method any query reads is
+    // name-only, and `find_refs_in_file` returns those rows unresolved and
+    // named, so they are re-resolved above rather than carried (sutra/513).
     ref_rows.extend(carried.iter().map(|r| ResolvedRefRow {
         target_symbol_id: r.target_symbol_id,
         unresolved_name: r.unresolved_name.as_deref(),

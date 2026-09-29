@@ -1098,6 +1098,64 @@ fn test_rust_receiver_call_never_binds_free_fn() {
     assert_eq!(resolved[0].unresolved_name.as_deref(), Some("push"));
 }
 
+/// sutra/513: `v.len()` with one user `len` in the workspace binds by name
+/// alone. The receiver is unknown and std has a `len`, so it is name-only:
+/// still bound (liveness counts it), never an edge.
+#[test]
+fn test_rust_std_named_receiver_call_binds_name_only() {
+    let refs = vec![make_receiver_call("len", "v", 10)];
+    let only_user_len = vec![sym(1, "BitSet::len", "len", "method")];
+    let resolved = resolve(&[], &refs, &only_user_len, &[], 0);
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::NameOnly)
+    );
+
+    // The tie-break and same-file picks among several are by name too.
+    let two_lens = vec![
+        sym_in_file(1, "BitSet::len", "len", "method", 3),
+        sym_in_file(2, "Ring::len", "len", "method", 4),
+    ];
+    for file_id in [0, 3] {
+        let resolved = resolve(&[], &refs, &two_lens, &[], file_id);
+        assert_eq!(
+            resolved[0].resolution_method,
+            Some(ResolutionMethod::NameOnly)
+        );
+    }
+}
+
+/// A user-only method name keeps the global fallback, as does a std name in
+/// a bare call or in another language: only a Rust dot-call is narrowed.
+#[test]
+fn test_name_only_is_rust_std_receiver_calls_only() {
+    let all_symbols = vec![
+        sym(1, "Db::file_by_path", "file_by_path", "method"),
+        sym(2, "BitSet::len", "len", "method"),
+    ];
+    let user_name = vec![make_receiver_call("file_by_path", "db", 10)];
+    let resolved = resolve(&[], &user_name, &all_symbols, &[], 0);
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::GlobalFallback)
+    );
+
+    let bare = vec![make_ref("len", 10, RefContextKind::Call)];
+    let resolved = resolve(&[], &bare, &all_symbols, &[], 0);
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::GlobalFallback)
+    );
+
+    let dart = vec![make_receiver_call("len", "v", 10)];
+    let resolved = resolve_lang(&[], &dart, &all_symbols, &[], 0, "dart");
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::GlobalFallback)
+    );
+}
+
 /// Without a receiver, a Rust call keeps binding free functions.
 #[test]
 fn test_rust_bare_call_still_binds_free_fn() {

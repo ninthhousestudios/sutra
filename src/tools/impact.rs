@@ -129,6 +129,7 @@ pub fn handle(
         "direct_caller_files": direct_caller_files,
         "direct_caller_file_edges": direct_caller_file_edges,
     });
+    super::add_name_only_callers(db, sym.id, &sym.short_name, &mut result)?;
 
     if let Some(ldb) = lessons_db {
         let project_slug = workspace_root.file_name().and_then(|n| n.to_str());

@@ -2495,7 +2495,7 @@ name = "tabs-use-kernel-not-runner"
             "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
              CREATE TABLE symbols (id INTEGER PRIMARY KEY, file_id INTEGER);
-             CREATE TABLE refs (file_id INTEGER, target_symbol_id INTEGER);
+             CREATE TABLE refs (file_id INTEGER, target_symbol_id INTEGER, resolution_method TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
         )
@@ -2558,11 +2558,13 @@ name = "config-fan-in"
     fn max_fan_in_counts_ref_edges_like_the_index() {
         let (conn, dir) = fan_in_fixture(&[(1, "src/config.rs")], &[(1, 10)], CONFIG_FAN_IN_RULE);
         // One more file reaches config only through a symbol reference, and a
-        // self-reference must not count — the build_file_adjacency union.
+        // self-reference must not count — the build_file_adjacency union. Nor
+        // does a name-only binding (sutra/513).
         conn.execute_batch(
             "INSERT INTO symbols VALUES (7, 1);
-             INSERT INTO refs VALUES (200, 7);
-             INSERT INTO refs VALUES (1, 7);",
+             INSERT INTO refs VALUES (200, 7, 'global_fallback');
+             INSERT INTO refs VALUES (1, 7, NULL);
+             INSERT INTO refs VALUES (201, 7, 'name_only');",
         )
         .unwrap();
 

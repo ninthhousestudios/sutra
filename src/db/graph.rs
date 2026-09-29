@@ -4,7 +4,7 @@ use rusqlite::params;
 
 use crate::error::Result;
 
-use super::{CommitRow, Db};
+use super::{CommitRow, Db, NAME_ONLY_RESOLUTION};
 
 /// Commits touching more than this many files are excluded from the cochange
 /// self-join. A commit spanning thousands of files (bulk import, decompiler
@@ -141,13 +141,18 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Resolved ref edges (file_id, target_symbol_id, context_kind). A
+    /// name-only binding is no edge ([`NAME_ONLY_RESOLUTION`]).
     pub fn all_resolved_refs(&self) -> Result<Vec<(i64, i64, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT file_id, target_symbol_id, context_kind FROM refs WHERE target_symbol_id IS NOT NULL",
+            "SELECT file_id, target_symbol_id, context_kind FROM refs \
+             WHERE target_symbol_id IS NOT NULL AND resolution_method IS NOT ?1",
         )?;
         let rows: rusqlite::Result<Vec<(i64, i64, String)>> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .query_map(params![NAME_ONLY_RESOLUTION], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .collect();
         Ok(rows?)
     }
@@ -181,15 +186,16 @@ impl Db {
     /// Resolved ref sites with their line and kind, for building the symbol-level
     /// wiring graph (sutra/372): (file_id, line, target_symbol_id, context_kind).
     /// Unlike `all_resolved_refs`, this keeps the ref's `line` so the build can
-    /// attribute the site to its enclosing (source) symbol.
+    /// attribute the site to its enclosing (source) symbol. Name-only bindings
+    /// are left out, as there.
     pub fn resolved_ref_edges(&self) -> Result<Vec<(i64, i64, i64, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT file_id, line, target_symbol_id, context_kind \
-             FROM refs WHERE target_symbol_id IS NOT NULL",
+            "SELECT file_id, line, target_symbol_id, context_kind FROM refs \
+             WHERE target_symbol_id IS NOT NULL AND resolution_method IS NOT ?1",
         )?;
         let rows: rusqlite::Result<Vec<(i64, i64, i64, String)>> = stmt
-            .query_map([], |row| {
+            .query_map(params![NAME_ONLY_RESOLUTION], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?
             .collect();
@@ -361,7 +367,8 @@ impl Db {
 /// on a raw connection: the per-file counterpart of
 /// [`crate::graph::build_file_adjacency`], with the same edge union (every
 /// resolved import, test or not, plus every resolved ref into one of the
-/// file's symbols) and the same self-edge exclusion. The guard uses it instead
+/// file's symbols, name-only bindings excepted) and the same self-edge
+/// exclusion. The guard uses it instead
 /// of the stored `fan_in_files` rollup, which the query-path incremental
 /// refresh leaves stale until the next full parse (sutra/456).
 pub(crate) fn file_importers_from_conn(
@@ -372,10 +379,10 @@ pub(crate) fn file_importers_from_conn(
         "SELECT file_id FROM imports WHERE resolved_file_id = ?1 AND file_id != ?1 \
          UNION \
          SELECT r.file_id FROM refs r JOIN symbols s ON s.id = r.target_symbol_id \
-         WHERE s.file_id = ?1 AND r.file_id != ?1",
+         WHERE s.file_id = ?1 AND r.file_id != ?1 AND r.resolution_method IS NOT ?2",
     )?;
     let rows: rusqlite::Result<HashSet<i64>> = stmt
-        .query_map(params![file_id], |row| row.get(0))?
+        .query_map(params![file_id, NAME_ONLY_RESOLUTION], |row| row.get(0))?
         .collect();
     Ok(rows?)
 }

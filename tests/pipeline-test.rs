@@ -1053,3 +1053,103 @@ async fn test_incremental_rollups_match_full_parse() {
         "after dropping d -> c"
     );
 }
+
+// sutra/513: `v.len()` on a Vec is a std call. With one user `len` in the
+// workspace the resolver used to bind it there, inventing a callee edge and a
+// caller. The binding is now name-only: kept for liveness, hidden from every
+// dependency read, and still name-only after the incremental paths (caller
+// re-extracted; target file re-extracted, which detaches inbound refs).
+#[tokio::test]
+async fn test_std_named_dot_call_binds_name_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "mod bitset;\nmod user;\n").unwrap();
+    let bitset = "pub struct BitSet;\n\
+                  impl BitSet {\n    pub fn len(&self) -> usize { 0 }\n    pub fn only_mine(&self) {}\n}\n";
+    std::fs::write(src.join("bitset.rs"), bitset).unwrap();
+    let user = "use crate::bitset::BitSet;\n\
+                pub fn rank(v: Vec<u8>, b: &BitSet) -> usize {\n    b.only_mine();\n    v.len()\n}\n";
+    std::fs::write(src.join("user.rs"), user).unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("name-only", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let reparse = || {
+        let cancel = AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap()
+    };
+
+    let check = |when: &str| {
+        let len = db.resolve_symbol("BitSet::len", None).unwrap().unwrap();
+        let mine = db
+            .resolve_symbol("BitSet::only_mine", None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            db.find_refs_to_symbol(len.id).unwrap().is_empty(),
+            "{when}: v.len() is no ref to BitSet::len"
+        );
+        assert_eq!(
+            db.count_name_only_calls_to_symbol(len.id).unwrap(),
+            1,
+            "{when}"
+        );
+        let impact =
+            sutra::tools::impact::handle(&db, "BitSet::len", false, None, dir.path()).unwrap();
+        assert_eq!(impact["direct_callers"], 0, "{when}");
+        assert_eq!(impact["name_only_callers"], 1, "{when}");
+        assert_eq!(db.find_refs_to_symbol(mine.id).unwrap().len(), 1, "{when}");
+
+        let user_file = db.file_by_path("src/user.rs").unwrap().unwrap();
+        let refs = db.find_refs_in_file(user_file.id).unwrap();
+        let len_call = refs
+            .iter()
+            .find(|r| r.context_kind == "call" && r.line == 4)
+            .expect("the v.len() call site");
+        assert_eq!(len_call.target_symbol_id, None, "{when}");
+        assert_eq!(len_call.unresolved_name.as_deref(), Some("len"), "{when}");
+
+        assert!(
+            !db.all_resolved_refs()
+                .unwrap()
+                .iter()
+                .any(|(_, target, _)| *target == len.id),
+            "{when}: no file-graph edge"
+        );
+        let callees = sutra::tools::calls::handle(&db, "rank", Some("callees"), None).unwrap();
+        let names: Vec<&str> = callees["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e["callee"].as_str())
+            .collect();
+        assert!(names.contains(&"BitSet::only_mine"), "{when}: {names:?}");
+        assert!(!names.contains(&"BitSet::len"), "{when}: {names:?}");
+
+        // Liveness still counts the by-name binding.
+        let dead = db.find_dead_symbols(true, None).unwrap();
+        assert!(
+            !dead.iter().any(|(qn, ..)| qn == "BitSet::len"),
+            "{when}: BitSet::len stays live"
+        );
+        let site = db.symbols_named("len").unwrap().into_iter().next().unwrap();
+        assert!(
+            db.production_liveness(&site, |_| false).unwrap().live,
+            "{when}"
+        );
+    };
+
+    reparse();
+    check("full parse");
+
+    std::fs::write(src.join("user.rs"), format!("{user}// touched\n")).unwrap();
+    assert_eq!(reparse().files_parsed, 1, "only user.rs is re-extracted");
+    check("after re-extracting the caller");
+
+    std::fs::write(src.join("bitset.rs"), format!("{bitset}// touched\n")).unwrap();
+    assert_eq!(reparse().files_parsed, 1, "only bitset.rs is re-extracted");
+    check("after re-extracting the target file");
+}

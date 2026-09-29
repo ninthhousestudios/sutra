@@ -14,6 +14,12 @@ pub enum ResolutionMethod {
     GlobalFallback,
     TypeTracking,
     QualifiedPath,
+    /// A dot-call bound by short name alone where the name is also a common
+    /// std method (`v.len()` binding to the only user `len`). Kept for
+    /// liveness, which is by name for method calls anyway; every dependency
+    /// read (calls, impact, trace, context, graphs) treats it as unresolved
+    /// (sutra/513).
+    NameOnly,
 }
 
 impl ResolutionMethod {
@@ -25,8 +31,195 @@ impl ResolutionMethod {
             Self::GlobalFallback => "global_fallback",
             Self::TypeTracking => "type_tracking",
             Self::QualifiedPath => "qualified_path",
+            Self::NameOnly => crate::db::NAME_ONLY_RESOLUTION,
         }
     }
+}
+
+/// Method names std/core give the types every Rust file uses (iterators,
+/// slices, `Vec`, `str`/`String`, `Option`/`Result`, maps and sets, smart
+/// pointers and locks, `Path`, io and fmt). A receiver call with one of these
+/// names and no receiver evidence is more likely the std method than a
+/// same-named user method, so a by-name binding is recorded as
+/// [`ResolutionMethod::NameOnly`]. Names user types overwhelmingly own
+/// (`store`, `update`) are left out: there the by-name guess is usually right.
+const RUST_STD_METHODS: &[&str] = &[
+    // Iterator and IntoIterator
+    "all",
+    "any",
+    "chain",
+    "cloned",
+    "collect",
+    "copied",
+    "count",
+    "cycle",
+    "enumerate",
+    "filter",
+    "filter_map",
+    "find",
+    "find_map",
+    "flat_map",
+    "flatten",
+    "fold",
+    "for_each",
+    "into_iter",
+    "iter",
+    "iter_mut",
+    "last",
+    "map",
+    "max",
+    "max_by",
+    "max_by_key",
+    "min",
+    "min_by",
+    "min_by_key",
+    "next",
+    "nth",
+    "partition",
+    "peekable",
+    "position",
+    "product",
+    "rev",
+    "skip",
+    "skip_while",
+    "step_by",
+    "sum",
+    "take",
+    "take_while",
+    "unzip",
+    "zip",
+    // slices and Vec
+    "append",
+    "as_slice",
+    "binary_search",
+    "capacity",
+    "chunks",
+    "clear",
+    "concat",
+    "contains",
+    "dedup",
+    "drain",
+    "extend",
+    "first",
+    "first_mut",
+    "get",
+    "get_mut",
+    "insert",
+    "is_empty",
+    "join",
+    "last_mut",
+    "len",
+    "pop",
+    "push",
+    "remove",
+    "reserve",
+    "retain",
+    "reverse",
+    "sort",
+    "sort_by",
+    "sort_by_key",
+    "sort_unstable",
+    "sort_unstable_by",
+    "sort_unstable_by_key",
+    "split_at",
+    "swap",
+    "to_vec",
+    "truncate",
+    "windows",
+    // str and String
+    "as_bytes",
+    "as_str",
+    "bytes",
+    "char_indices",
+    "chars",
+    "ends_with",
+    "lines",
+    "parse",
+    "push_str",
+    "replace",
+    "rfind",
+    "rsplit",
+    "rsplit_once",
+    "split",
+    "split_once",
+    "split_whitespace",
+    "starts_with",
+    "strip_prefix",
+    "strip_suffix",
+    "to_lowercase",
+    "to_uppercase",
+    "trim",
+    "trim_end",
+    "trim_start",
+    // Option and Result
+    "and_then",
+    "as_deref",
+    "as_mut",
+    "expect",
+    "is_err",
+    "is_none",
+    "is_ok",
+    "is_some",
+    "map_err",
+    "map_or",
+    "map_or_else",
+    "ok",
+    "ok_or",
+    "ok_or_else",
+    "or_else",
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_default",
+    "unwrap_or_else",
+    // maps and sets
+    "contains_key",
+    "entry",
+    "keys",
+    "or_default",
+    "or_insert",
+    "or_insert_with",
+    "values",
+    "values_mut",
+    // conversion, comparison and formatting traits
+    "as_ref",
+    "borrow",
+    "borrow_mut",
+    "clone",
+    "cmp",
+    "eq",
+    "fmt",
+    "hash",
+    "into",
+    "partial_cmp",
+    "to_owned",
+    "to_string",
+    "try_into",
+    // Path, io, locks and hashers
+    "exists",
+    "extension",
+    "file_name",
+    "file_stem",
+    "finish",
+    "flush",
+    "is_dir",
+    "is_file",
+    "lock",
+    "parent",
+    "path",
+    "read",
+    "read_to_string",
+    "to_path_buf",
+    "to_str",
+    "to_string_lossy",
+    "write",
+    "write_all",
+    "write_str",
+];
+
+/// Whether a by-name receiver-call binding of `name` in `lang` is only a
+/// name match ([`RUST_STD_METHODS`]). Other languages keep the by-name bind.
+fn is_std_method_name(lang: &str, name: &str) -> bool {
+    lang == "rust" && RUST_STD_METHODS.contains(&name)
 }
 
 #[derive(Debug, Clone)]
@@ -395,9 +588,16 @@ fn resolve_single(
     if receiver_call && global_matches.iter().any(|s| s.kind == "method") {
         global_matches.retain(|s| s.kind == "method");
     }
+    // Nothing here looks at the receiver, so `v.len()` binds to the only user
+    // `len` whatever `v` is. For a std method name that is a guess, not an edge.
+    let by_name = if receiver_call && is_std_method_name(lang, name) {
+        ResolutionMethod::NameOnly
+    } else {
+        ResolutionMethod::GlobalFallback
+    };
 
     if global_matches.len() == 1 {
-        return resolved(r, global_matches[0].id, ResolutionMethod::GlobalFallback);
+        return resolved(r, global_matches[0].id, by_name);
     }
 
     if global_matches.len() > 1 {
@@ -406,7 +606,7 @@ fn resolve_single(
             .filter(|s| s.file_id == file_id)
             .collect();
         if same_file.len() == 1 {
-            return resolved(r, same_file[0].id, ResolutionMethod::GlobalFallback);
+            return resolved(r, same_file[0].id, by_name);
         }
 
         let pool = if same_file.len() > 1 {
@@ -415,7 +615,7 @@ fn resolve_single(
             global_matches.clone()
         };
         let best = pool.iter().min_by_key(|s| s.qualified_name.len()).unwrap();
-        return resolved(r, best.id, ResolutionMethod::GlobalFallback);
+        return resolved(r, best.id, by_name);
     }
 
     // --- Step 3b: Python class-as-constructor (language-scoped) ---

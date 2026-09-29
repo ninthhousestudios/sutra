@@ -117,6 +117,12 @@ over-counting keeps a symbol alive. It's wrong for callees and dependency
 packing, where it invents dependencies. Related: sutra/204 (edge confidence),
 sutra/376 (flag ambiguous-name edges).
 
+**Fixed (sutra/513).** A Rust dot-call bound by short name alone, whose name
+is also a common std method (`resolver::RUST_STD_METHODS`), is stored as
+`resolution_method = 'name_only'`. It keeps its target, so liveness is
+unchanged. Every dependency read treats it as an unresolved call. impact,
+refs and calls (callers) report the left-out sites as `name_only_callers`.
+
 ### F3. `review.changed_symbols` is every symbol in each changed file
 
 `src/tools/review.rs` builds `changed_symbols` from `signals.per_file[].symbols`,

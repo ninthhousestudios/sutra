@@ -114,8 +114,9 @@ pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde
         "unresolved_candidates": unresolved_count,
         "references": references,
     });
+    super::add_name_only_callers(db, sym.id, &sym.short_name, &mut result)?;
 
-    if resolved_count == 0 && unresolved_count == 0 {
+    if resolved_count == 0 && unresolved_count == 0 && result.get("name_only_callers").is_none() {
         result["diagnostic"] = serde_json::to_value(Diagnostic::SymbolExistsWithNoResults {
             symbol: sym.qualified_name.to_string(),
             symbol_kind: sym.kind.to_string(),
