@@ -166,6 +166,31 @@ fn dart_structure_keeps_static_holders_and_platform_twins_live() {
 }
 
 #[test]
+fn python_functions_used_as_values_or_decorators_are_live() {
+    // sutra/515: a callback passed as an argument, held in a tuple or dict,
+    // or applied as a decorator is referenced, not orphaned.
+    let fx = fixture(&[
+        &[("app.py", "def main():\n    pass\n")],
+        &[(
+            "app.py",
+            "def _style():\n    pass\n\n\
+             def _fetch():\n    pass\n\n\
+             def _years():\n    pass\n\n\
+             def _batched(f):\n    return f\n\n\
+             def _unused():\n    pass\n\n\
+             PROVIDERS = (_fetch,)\n\
+             COLUMNS = {\"years\": _years}\n\n\
+             @_batched\n\
+             def main():\n    register(PROVIDERS, COLUMNS, _style)\n",
+        )],
+    ]);
+    assert_eq!(
+        names(&review_diff(&fx, "HEAD")),
+        vec![(OrphanKind::Added, "_unused", 0)]
+    );
+}
+
+#[test]
 fn a_historical_commit_is_skipped_not_clean() {
     let fx = fixture(&[
         &[

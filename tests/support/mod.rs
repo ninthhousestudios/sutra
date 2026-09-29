@@ -67,7 +67,7 @@ pub fn index(root: tempfile::TempDir, id: &str) -> Fixture {
     let ws = WorkspaceEntry {
         id: id.to_string(),
         root: PathBuf::from(r),
-        languages: vec!["rust".to_string(), "dart".to_string()],
+        languages: vec!["rust".to_string(), "dart".to_string(), "python".to_string()],
         frozen: false,
     };
     let config = Config {

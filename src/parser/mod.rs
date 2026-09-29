@@ -115,6 +115,39 @@ pub fn flatten_symbols(tree: &[ExtractedSymbol]) -> Vec<&ExtractedSymbol> {
     out
 }
 
+/// A bare value read is kept only when the name reaches a definition: an item
+/// in the file's scope chain, an import (whose path ends in the name, split on
+/// `path_sep`), or a SCREAMING_CASE name (a const, possibly glob-imported).
+/// Every other bare identifier is a local variable, and storing it would
+/// multiply the refs table for nothing.
+pub(crate) fn is_meaningful_read(
+    r: &ExtractedRef,
+    imports: &[ExtractedImport],
+    path_sep: &str,
+) -> bool {
+    if r.context_kind != RefContextKind::Read || r.qualifier.is_some() {
+        return true;
+    }
+    match r.resolved_local_target.as_deref() {
+        Some(rust::LOCAL_BINDING_SENTINEL) => false,
+        Some(_) => true,
+        None => {
+            let name = r.name.as_str();
+            imports.iter().any(|i| {
+                i.alias.as_deref() == Some(name) || i.raw_path.rsplit(path_sep).next() == Some(name)
+            }) || is_screaming_case(name)
+        }
+    }
+}
+
+fn is_screaming_case(name: &str) -> bool {
+    name.len() > 1
+        && name.chars().any(|c| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
     Function,

@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
-    complexity, structural_hash,
+    complexity, is_meaningful_read, structural_hash,
 };
 use tree_sitter::{Node, TreeCursor};
 
@@ -321,34 +321,6 @@ fn resolve_in_scope_chain(
     }
 }
 
-/// A bare value read is kept only when the name reaches a definition: an item
-/// in the file's scope chain, a `use` import, or a SCREAMING_CASE name (a
-/// const or static, possibly glob-imported). Every other bare identifier is a
-/// local variable, and storing it would multiply the refs table for nothing.
-fn is_meaningful_read(r: &ExtractedRef, imports: &[ExtractedImport]) -> bool {
-    if r.context_kind != RefContextKind::Read || r.qualifier.is_some() {
-        return true;
-    }
-    match r.resolved_local_target.as_deref() {
-        Some(LOCAL_BINDING_SENTINEL) => false,
-        Some(_) => true,
-        None => {
-            let name = r.name.as_str();
-            imports.iter().any(|i| {
-                i.alias.as_deref() == Some(name) || i.raw_path.rsplit("::").next() == Some(name)
-            }) || is_screaming_case(name)
-        }
-    }
-}
-
-fn is_screaming_case(name: &str) -> bool {
-    name.len() > 1
-        && name.chars().any(|c| c.is_ascii_uppercase())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-}
-
 // ---------------------------------------------------------------------------
 
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
@@ -367,7 +339,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 
     let mut imports = Vec::new();
     collect_imports(&mut imports, root, src);
-    references.retain(|r| is_meaningful_read(r, &imports));
+    references.retain(|r| is_meaningful_read(r, &imports, "::"));
 
     // Imports inside `#[cfg(test)]` are not production dependencies: an edge
     // they create is invisible to a release build, so constraint evaluation

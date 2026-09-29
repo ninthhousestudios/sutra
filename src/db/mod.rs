@@ -1652,6 +1652,9 @@ impl Db {
                AND path != 'build.rs'
                AND path NOT LIKE '%/build.rs'
                AND path NOT LIKE 'src/bin/%'
+               AND path NOT IN ('__init__.py', '__main__.py')
+               AND path NOT LIKE '%/\\_\\_init\\_\\_.py' ESCAPE '\\'
+               AND path NOT LIKE '%/\\_\\_main\\_\\_.py' ESCAPE '\\'
                AND path NOT LIKE 'lib/%'
                AND path NOT LIKE 'tests/%'
                AND path NOT LIKE 'test/%'

@@ -1893,3 +1893,28 @@ fn find_unreachable_files_dart_test_exclusions_use_literal_underscore() {
     assert!(!reported.contains(&"integration_test/a.dart".to_string()));
     assert!(!reported.contains(&"test/b.dart".to_string()));
 }
+
+#[test]
+fn find_unreachable_files_exempts_python_package_and_entry_files() {
+    // sutra/515: a package is imported by directory, so its `__init__.py` has
+    // no file fan-in; `__main__.py` is an entry point like main.rs.
+    let (_dir, db) = setup_db();
+    for path in [
+        "__init__.py",
+        "pkg/__init__.py",
+        "pkg/__main__.py",
+        "pkg/orphan.py",
+        "pkg/foo__init__.py",
+    ] {
+        db.upsert_file(path, "python", "h", 1, true).unwrap();
+    }
+
+    let reported: Vec<String> = db
+        .find_unreachable_files(None)
+        .unwrap()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+
+    assert_eq!(reported, ["pkg/foo__init__.py", "pkg/orphan.py"]);
+}

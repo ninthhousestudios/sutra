@@ -209,6 +209,10 @@ add nothing that the commit-time check lacks.
   decorator (`@_batched`). All 4 single-hit findings were really dead.
   `unreachable_files` lists every `__init__.py`. If `db::orphans` shares
   these liveness rules, the orphans advisory has the same false positives.
+  **Fixed (sutra/515).** It did share them: both count the same `refs` rows.
+  The Python adapter now emits `read` refs for bare identifiers in value
+  position, kept only when the name reaches a definition or an import, and
+  `__init__.py`/`__main__.py` are no longer reported as unreachable.
 - **trace.** 9 of 10 forward paths start at a test function (zero callers
   makes it an entry point), and one path appears twice.
 - **provenance.** Returns every commit to the symbol's *file*, labeled by its

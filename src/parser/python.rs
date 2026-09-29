@@ -3,7 +3,7 @@ use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::dart::TYPE_TRACKING_PREFIX;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
-    complexity, structural_hash,
+    complexity, is_meaningful_read, structural_hash,
 };
 use tree_sitter::{Node, TreeCursor};
 
@@ -536,6 +536,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     }
 
     let imports = collect_imports(root, src);
+    references.retain(|r| is_meaningful_read(r, &imports, "."));
 
     Ok(ParseResult {
         file_path: file_path.to_string(),
@@ -1163,11 +1164,24 @@ fn is_definition_name(node: Node) -> bool {
         "keyword_argument" => parent
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id()),
+        "for_in_clause" => parent
+            .child_by_field_name("left")
+            .is_some_and(|n| n.id() == node.id()),
+        "named_expression" => parent
+            .child_by_field_name("name")
+            .is_some_and(|n| n.id() == node.id()),
+        // Untyped parameters and `*args`/`**kwargs` sit directly under these.
+        "parameters" | "lambda_parameters" | "list_splat_pattern" | "dictionary_splat_pattern" => {
+            true
+        }
+        // Unpacking targets (`a, b = ...`, `for (k, v) in ...`): the grammar
+        // uses these kinds only in binding position.
+        "pattern_list" | "tuple_pattern" | "list_pattern" => true,
         "aliased_import" => true,
         "dotted_name" => parent.parent().is_some_and(|gp| {
             matches!(
                 gp.kind(),
-                "import_statement" | "import_from_statement" | "aliased_import"
+                "import_statement" | "import_from_statement" | "aliased_import" | "relative_import"
             )
         }),
         "global_statement" | "nonlocal_statement" => true,
@@ -1229,7 +1243,10 @@ fn classify_ref_context(node: Node) -> RefContextKind {
         return RefContextKind::FieldAccess;
     }
 
-    RefContextKind::Other
+    // Everything else is a value read: an argument, tuple element, dict value,
+    // right-hand side, default or decorator (`@_batched`). A function passed
+    // as a callback is only reachable through such a read (sutra/515).
+    RefContextKind::Read
 }
 
 fn has_type_ancestor(node: Node) -> bool {
@@ -1656,13 +1673,79 @@ mod tests {
     #[test]
     fn call_args_emit_no_type_ref() {
         // Branch is scoped to class superclasses, not every argument_list —
-        // regular call arguments must not become refs.
-        let r = parse_py("foo(bar)\n");
+        // a regular call argument is a value read, never a type use.
+        let r = parse_py("def bar():\n    pass\nfoo(bar)\n");
         assert!(
-            !r.references.iter().any(|r| r.name == "bar"),
-            "call argument bar should not emit a ref: {:?}",
+            r.references
+                .iter()
+                .filter(|r| r.name == "bar")
+                .all(|r| r.context_kind == RefContextKind::Read),
+            "call argument bar should be a read: {:?}",
             r.references
         );
+    }
+
+    #[test]
+    fn value_position_functions_emit_reads() {
+        // sutra/515: a function passed as an argument, held in a tuple or a
+        // dict, bound on a right-hand side, used as a default or decorator.
+        let code = "\
+def _style():
+    pass
+def _fetch():
+    pass
+def _years():
+    pass
+def _batched(f):
+    return f
+def _default():
+    pass
+register(header, _style)
+PROVIDERS = (_fetch, other)
+COLUMNS = {\"cell_years\": _years}
+alias = _fetch
+@_batched
+def work(cb=_default):
+    pass
+";
+        let r = parse_py(code);
+        let reads = |name: &str| -> Vec<(usize, Option<&str>)> {
+            r.references
+                .iter()
+                .filter(|x| x.name == name && x.context_kind == RefContextKind::Read)
+                .map(|x| (x.line, x.resolved_local_target.as_deref()))
+                .collect()
+        };
+        assert_eq!(reads("_style"), [(11, Some("_style"))]);
+        assert_eq!(
+            reads("_fetch"),
+            [(12, Some("_fetch")), (14, Some("_fetch"))]
+        );
+        assert_eq!(reads("_years"), [(13, Some("_years"))]);
+        assert_eq!(reads("_batched"), [(15, Some("_batched"))]);
+        assert_eq!(reads("_default"), [(16, Some("_default"))]);
+    }
+
+    #[test]
+    fn value_reads_drop_locals_and_unknowns() {
+        // Locals, params, unpacking targets and unresolvable names are not
+        // stored; an imported name read as a value is.
+        let code = "\
+from pkg.mod import helper
+def f(a, *rest, **kw):
+    x, (y, z) = a, rest
+    items = [v for v in kw]
+    g = lambda q: q
+    return use(x, y, z, items, g, helper, unknown)
+";
+        let r = parse_py(code);
+        let reads: Vec<&str> = r
+            .references
+            .iter()
+            .filter(|x| x.context_kind == RefContextKind::Read)
+            .map(|x| x.name.as_str())
+            .collect();
+        assert_eq!(reads, ["helper"]);
     }
 
     #[test]
