@@ -58,7 +58,7 @@ use crate::tools::orphans::qualifier_fits;
 use crate::tools::review::DiffScope;
 use crate::tools::sibling_pattern::read_sides;
 use crate::tools::symbol_diff::{
-    ChangeKind, UnmatchedSymbol, build_unmatched, classify_symbols, resolve_renames,
+    ChangeKind, ContainerScope, UnmatchedSymbol, build_unmatched, classify_symbols, resolve_renames,
 };
 
 /// The mechanism name in the firing log.
@@ -630,7 +630,8 @@ fn diff_units(
         let new = parse(new_src.as_deref(), new_path);
         match (&old_src, &new_src, &old, &new) {
             (Some(o), Some(n), Some(op), Some(np)) => {
-                let result = classify_symbols(op, np, o, n, old_path, new_path);
+                let result =
+                    classify_symbols(op, np, (o, n), (old_path, new_path), ContainerScope::Whole);
                 let old_flat = flatten_symbols(&op.symbols);
                 for change in result.changes {
                     if !matches!(

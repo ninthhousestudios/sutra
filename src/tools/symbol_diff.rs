@@ -6,10 +6,10 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::git::{self, DiffFileEntry};
 use crate::parser::{
-    self, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, flatten_symbols,
+    self, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind, flatten_symbols,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
     Added,
@@ -19,6 +19,21 @@ pub enum ChangeKind {
     CosmeticChanged,
     Renamed,
     Moved,
+}
+
+impl ChangeKind {
+    /// The serialized name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Deleted => "deleted",
+            Self::SignatureChanged => "signature_changed",
+            Self::BodyChanged => "body_changed",
+            Self::CosmeticChanged => "cosmetic_changed",
+            Self::Renamed => "renamed",
+            Self::Moved => "moved",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,13 +136,21 @@ fn body_hash(source: &str, sym: &ExtractedSymbol) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
 }
 
-fn callees_in_range(refs: &[ExtractedRef], start_line: usize, end_line: usize) -> BTreeSet<String> {
+/// Names called on the lines `on_line` keeps.
+fn callees_where(refs: &[ExtractedRef], on_line: impl Fn(usize) -> bool) -> BTreeSet<&str> {
     refs.iter()
-        .filter(|r| {
-            r.context_kind == RefContextKind::Call && r.line >= start_line && r.line <= end_line
-        })
-        .map(|r| r.name.clone())
+        .filter(|r| r.context_kind == RefContextKind::Call && on_line(r.line))
+        .map(|r| r.name.as_str())
         .collect()
+}
+
+/// The callees `new` gained and lost over `old`; `None` when neither.
+fn diff_callees(old: &BTreeSet<&str>, new: &BTreeSet<&str>) -> Option<CalleeDiff> {
+    let cd = CalleeDiff {
+        added: new.difference(old).copied().map(String::from).collect(),
+        removed: old.difference(new).copied().map(String::from).collect(),
+    };
+    (!cd.added.is_empty() || !cd.removed.is_empty()).then_some(cd)
 }
 
 fn callee_diff(
@@ -135,13 +158,15 @@ fn callee_diff(
     new_refs: &[ExtractedRef],
     old_sym: &ExtractedSymbol,
     new_sym: &ExtractedSymbol,
-) -> CalleeDiff {
-    let old_callees = callees_in_range(old_refs, old_sym.start_line, old_sym.end_line);
-    let new_callees = callees_in_range(new_refs, new_sym.start_line, new_sym.end_line);
-    CalleeDiff {
-        added: new_callees.difference(&old_callees).cloned().collect(),
-        removed: old_callees.difference(&new_callees).cloned().collect(),
-    }
+) -> Option<CalleeDiff> {
+    let in_span = |sym: &ExtractedSymbol| {
+        let (start, end) = (sym.start_line, sym.end_line);
+        move |l: usize| l >= start && l <= end
+    };
+    diff_callees(
+        &callees_where(old_refs, in_span(old_sym)),
+        &callees_where(new_refs, in_span(new_sym)),
+    )
 }
 
 fn parent_qualified<'a>(qualified_name: &'a str, short_name: &str) -> Option<&'a str> {
@@ -159,32 +184,180 @@ pub fn build_unmatched(parse: &ParseResult, source: &str, file: &str) -> Vec<Unm
         .collect()
 }
 
-pub fn classify_symbols(
-    old_parse: &ParseResult,
-    new_parse: &ParseResult,
-    old_source: &str,
-    new_source: &str,
-    old_file: &str,
-    new_file: &str,
-) -> ClassifyResult {
-    let old_flat = flatten_symbols(&old_parse.symbols);
-    let new_flat = flatten_symbols(&new_parse.symbols);
+/// What a container symbol's (an `impl`, module, struct or class) body is
+/// compared on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerScope {
+    /// The whole span, members included: a container changes whenever one of
+    /// its members does.
+    Whole,
+    /// Only the container's own lines, outside its members: a member's change
+    /// is reported on the member alone, and the container only when its own
+    /// text changed (sutra/517).
+    Own,
+}
 
+/// The 1-based line ranges a symbol's direct members cover. A member takes
+/// the contiguous non-blank lines just above it too (its doc comments and
+/// attributes, which tree-sitter leaves outside its node), stopping at the
+/// container's first line and the previous member's last.
+fn member_ranges(sym: &ExtractedSymbol, lines: &[&str]) -> Vec<(usize, usize)> {
+    let mut children: Vec<&ExtractedSymbol> = sym.children.iter().collect();
+    children.sort_by_key(|c| c.start_line);
+    let mut ranges = Vec::with_capacity(children.len());
+    let mut floor = sym.start_line;
+    for child in children {
+        let mut start = child.start_line;
+        while start > floor + 1 && lines.get(start - 2).is_some_and(|l| !l.trim().is_empty()) {
+            start -= 1;
+        }
+        ranges.push((start, child.end_line));
+        floor = floor.max(child.end_line);
+    }
+    ranges
+}
+
+/// Whether line `l` of `sym` is its own, not a member's.
+fn own_line(members: &[(usize, usize)], l: usize) -> bool {
+    !members.iter().any(|&(s, e)| (s..=e).contains(&l))
+}
+
+/// A container's own lines, trimmed and without blank lines.
+fn own_text(lines: &[&str], sym: &ExtractedSymbol, members: &[(usize, usize)]) -> String {
+    (sym.start_line..=sym.end_line)
+        .filter(|&l| own_line(members, l))
+        .filter_map(|l| lines.get(l - 1).map(|t| t.trim()))
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A container compared on its own lines ([`ContainerScope::Own`]): `None`
+/// when only its members changed.
+fn classify_container(
+    old_sym: &ExtractedSymbol,
+    new_sym: &ExtractedSymbol,
+    parses: (&ParseResult, &ParseResult),
+    sources: (&str, &str),
+) -> Option<SymbolChange> {
+    let change = |change: ChangeKind, callee_diff: Option<CalleeDiff>| SymbolChange {
+        symbol: new_sym.qualified_name.to_string(),
+        kind: new_sym.kind.as_str().to_string(),
+        change,
+        callee_diff,
+        from_symbol: None,
+        from_file: None,
+    };
+    if signature_changed(old_sym, new_sym) {
+        return Some(change(ChangeKind::SignatureChanged, None));
+    }
+    let old_lines: Vec<&str> = sources.0.lines().collect();
+    let new_lines: Vec<&str> = sources.1.lines().collect();
+    let old_members = member_ranges(old_sym, &old_lines);
+    let new_members = member_ranges(new_sym, &new_lines);
+    if own_text(&old_lines, old_sym, &old_members) == own_text(&new_lines, new_sym, &new_members) {
+        return None;
+    }
+    let own = |sym: &ExtractedSymbol, members: &[(usize, usize)], l: usize| {
+        l >= sym.start_line && l <= sym.end_line && own_line(members, l)
+    };
+    let cd = diff_callees(
+        &callees_where(&parses.0.references, |l| own(old_sym, &old_members, l)),
+        &callees_where(&parses.1.references, |l| own(new_sym, &new_members, l)),
+    );
+    Some(change(ChangeKind::BodyChanged, cd))
+}
+
+fn signature_changed(old_sym: &ExtractedSymbol, new_sym: &ExtractedSymbol) -> bool {
+    match (&old_sym.signature_hash, &new_sym.signature_hash) {
+        (Some(oh), Some(nh)) => oh != nh,
+        (None, Some(_)) | (Some(_), None) => true,
+        (None, None) => false,
+    }
+}
+
+/// For each new-side symbol, the old-side symbol it continues, by
+/// `(qualified_name, kind)`; and which old-side symbols were continued. A key
+/// several symbols share (Rust's `impl Foo` blocks, `Foo::fmt` in two trait
+/// impls) pairs identical bodies first and the rest in source order. Keyed
+/// through a map instead, every such block was compared against the one block
+/// the map kept, and reported a spurious change (sutra/517).
+fn pair_symbols(
+    old_flat: &[&ExtractedSymbol],
+    new_flat: &[&ExtractedSymbol],
+    sources: (&str, &str),
+) -> (Vec<Option<usize>>, Vec<bool>) {
     type SymKey<'a> = (&'a str, &'a str);
     fn sym_key(s: &ExtractedSymbol) -> SymKey<'_> {
         (s.qualified_name.as_str(), s.kind.as_str())
     }
 
-    let old_map: HashMap<SymKey<'_>, &ExtractedSymbol> =
-        old_flat.iter().map(|s| (sym_key(s), *s)).collect();
-    let new_map: HashMap<SymKey<'_>, &ExtractedSymbol> =
-        new_flat.iter().map(|s| (sym_key(s), *s)).collect();
+    let mut groups: HashMap<SymKey<'_>, (Vec<usize>, Vec<usize>)> = HashMap::new();
+    for (i, s) in old_flat.iter().enumerate() {
+        groups.entry(sym_key(s)).or_default().0.push(i);
+    }
+    for (i, s) in new_flat.iter().enumerate() {
+        groups.entry(sym_key(s)).or_default().1.push(i);
+    }
+
+    let mut new_to_old: Vec<Option<usize>> = vec![None; new_flat.len()];
+    let mut old_paired = vec![false; old_flat.len()];
+    for (olds, news) in groups.values() {
+        if let ([o], [n]) = (olds.as_slice(), news.as_slice()) {
+            new_to_old[*n] = Some(*o);
+            old_paired[*o] = true;
+            continue;
+        }
+        let old_hashes: Vec<String> = olds
+            .iter()
+            .map(|&o| body_hash(sources.0, old_flat[o]))
+            .collect();
+        for &n in news {
+            let hash = body_hash(sources.1, new_flat[n]);
+            if let Some(&o) = olds
+                .iter()
+                .zip(&old_hashes)
+                .find(|&(&o, h)| !old_paired[o] && *h == hash)
+                .map(|(o, _)| o)
+            {
+                new_to_old[n] = Some(o);
+                old_paired[o] = true;
+            }
+        }
+        let rest_old: Vec<usize> = olds.iter().filter(|&&o| !old_paired[o]).copied().collect();
+        let rest_new: Vec<usize> = news
+            .iter()
+            .filter(|&&n| new_to_old[n].is_none())
+            .copied()
+            .collect();
+        for (n, o) in rest_new.into_iter().zip(rest_old) {
+            new_to_old[n] = Some(o);
+            old_paired[o] = true;
+        }
+    }
+    (new_to_old, old_paired)
+}
+
+/// Classify the symbols of a file changed on both sides. `sources` and
+/// `files` are `(old, new)`.
+pub fn classify_symbols(
+    old_parse: &ParseResult,
+    new_parse: &ParseResult,
+    sources: (&str, &str),
+    files: (&str, &str),
+    containers: ContainerScope,
+) -> ClassifyResult {
+    let (old_source, new_source) = sources;
+    let (old_file, new_file) = files;
+    let old_flat = flatten_symbols(&old_parse.symbols);
+    let new_flat = flatten_symbols(&new_parse.symbols);
+    let (new_to_old, old_paired) = pair_symbols(&old_flat, &new_flat, sources);
 
     let mut changes = Vec::new();
     let mut unmatched_new = Vec::new();
 
-    for new_sym in &new_flat {
-        match old_map.get(&sym_key(new_sym)) {
+    for (new_sym, paired) in new_flat.iter().zip(&new_to_old) {
+        match paired.map(|o| old_flat[o]) {
             None => {
                 unmatched_new.push(UnmatchedSymbol::new(
                     SymbolSpan::from(*new_sym),
@@ -192,13 +365,19 @@ pub fn classify_symbols(
                     new_file,
                 ));
             }
+            Some(old_sym)
+                if containers == ContainerScope::Own
+                    && !(old_sym.children.is_empty() && new_sym.children.is_empty()) =>
+            {
+                changes.extend(classify_container(
+                    old_sym,
+                    new_sym,
+                    (old_parse, new_parse),
+                    sources,
+                ));
+            }
             Some(old_sym) => {
-                let sig_changed = match (&old_sym.signature_hash, &new_sym.signature_hash) {
-                    (Some(oh), Some(nh)) => oh != nh,
-                    (None, Some(_)) | (Some(_), None) => true,
-                    (None, None) => false,
-                };
-                if sig_changed {
+                if signature_changed(old_sym, new_sym) {
                     changes.push(SymbolChange {
                         symbol: new_sym.qualified_name.to_string(),
                         kind: new_sym.kind.as_str().to_string(),
@@ -232,11 +411,6 @@ pub fn classify_symbols(
                                 old_sym,
                                 new_sym,
                             );
-                            let cd = if cd.added.is_empty() && cd.removed.is_empty() {
-                                None
-                            } else {
-                                Some(cd)
-                            };
                             changes.push(SymbolChange {
                                 symbol: new_sym.qualified_name.to_string(),
                                 kind: new_sym.kind.as_str().to_string(),
@@ -252,16 +426,12 @@ pub fn classify_symbols(
         }
     }
 
-    let mut unmatched_old = Vec::new();
-    for old_sym in &old_flat {
-        if !new_map.contains_key(&sym_key(old_sym)) {
-            unmatched_old.push(UnmatchedSymbol::new(
-                SymbolSpan::from(*old_sym),
-                old_source,
-                old_file,
-            ));
-        }
-    }
+    let unmatched_old = old_flat
+        .iter()
+        .zip(&old_paired)
+        .filter(|(_, paired)| !**paired)
+        .map(|(old_sym, _)| UnmatchedSymbol::new(SymbolSpan::from(*old_sym), old_source, old_file))
+        .collect();
 
     ClassifyResult {
         changes,
@@ -616,7 +786,13 @@ pub fn diff_file(
         (Some(old_src), Some(new_src)) => {
             let old_parse = parser::parse_file(&old_src, language, old_file)?;
             let new_parse = parser::parse_file(&new_src, language, path)?;
-            let result = classify_symbols(&old_parse, &new_parse, &old_src, &new_src, path, path);
+            let result = classify_symbols(
+                &old_parse,
+                &new_parse,
+                (&old_src, &new_src),
+                (path, path),
+                ContainerScope::Whole,
+            );
 
             let resolve = resolve_renames(&result.unmatched_old, &result.unmatched_new);
             let mut changes = result.changes;
@@ -637,11 +813,16 @@ pub struct DiffFilesResult {
     pub errors: HashMap<String, String>,
 }
 
+/// Per-file symbol changes between `base` and `head`, with renames and moves
+/// resolved across files. `head` is read as [`git::file_content_on_side`]
+/// reads it: `None` is the worktree, `Some("")` the index. Containers are
+/// compared on their own lines ([`ContainerScope::Own`]), and the fields of a
+/// struct, enum or class the diff added or deleted are folded into it.
 pub fn diff_files(
     workspace_root: &Path,
     entries: &[DiffFileEntry],
     base: &str,
-    head: &str,
+    head: Option<&str>,
 ) -> DiffFilesResult {
     let mut all_unmatched_old: Vec<UnmatchedSymbol> = Vec::new();
     let mut all_unmatched_new: Vec<UnmatchedSymbol> = Vec::new();
@@ -658,8 +839,8 @@ pub fn diff_files(
         };
 
         let mut process = || -> Result<()> {
-            let old_source = git::git_file_content_at(workspace_root, base, old_file)?;
-            let new_source = git::git_file_content_at(workspace_root, head, new_file)?;
+            let old_source = git::file_content_on_side(workspace_root, Some(base), old_file)?;
+            let new_source = git::file_content_on_side(workspace_root, head, new_file)?;
 
             match (old_source, new_source) {
                 (None, None) => {}
@@ -675,7 +856,11 @@ pub fn diff_files(
                     let old_parse = parser::parse_file(&old_src, language, old_file)?;
                     let new_parse = parser::parse_file(&new_src, language, new_file)?;
                     let result = classify_symbols(
-                        &old_parse, &new_parse, &old_src, &new_src, new_file, new_file,
+                        &old_parse,
+                        &new_parse,
+                        (&old_src, &new_src),
+                        (new_file, new_file),
+                        ContainerScope::Own,
                     );
                     per_file
                         .entry(new_file.to_string())
@@ -730,7 +915,32 @@ pub fn diff_files(
         }
     }
 
+    for changes in per_file.values_mut() {
+        fold_fields(changes);
+    }
     DiffFilesResult { per_file, errors }
+}
+
+/// Drop the added or deleted fields of a type the same change added or
+/// deleted: the type's entry already says it.
+fn fold_fields(changes: &mut Vec<SymbolChange>) {
+    let whole: HashSet<(&str, ChangeKind)> = changes
+        .iter()
+        .filter(|c| matches!(c.change, ChangeKind::Added | ChangeKind::Deleted))
+        .filter(|c| c.kind != SymbolKind::Field.as_str())
+        .map(|c| (c.symbol.as_str(), c.change))
+        .collect();
+    let folded: Vec<bool> = changes
+        .iter()
+        .map(|c| {
+            c.kind == SymbolKind::Field.as_str()
+                && c.symbol
+                    .rsplit_once("::")
+                    .is_some_and(|(parent, _)| whole.contains(&(parent, c.change)))
+        })
+        .collect();
+    let mut folded = folded.into_iter();
+    changes.retain(|_| !folded.next().unwrap_or(false));
 }
 
 #[cfg(test)]
@@ -808,7 +1018,13 @@ mod tests {
         old_src: &str,
         new_src: &str,
     ) -> Vec<SymbolChange> {
-        let result = classify_symbols(old, new, old_src, new_src, "test.rs", "test.rs");
+        let result = classify_symbols(
+            old,
+            new,
+            (old_src, new_src),
+            ("test.rs", "test.rs"),
+            ContainerScope::Whole,
+        );
         let resolve = resolve_renames(&result.unmatched_old, &result.unmatched_new);
         let mut changes = result.changes;
         changes.extend(collapse_unmatched(
@@ -1124,18 +1340,16 @@ mod tests {
         let old_result = classify_symbols(
             &old_parse,
             &make_parse(vec![], vec![]),
-            source,
-            "",
-            "a.rs",
-            "a.rs",
+            (source, ""),
+            ("a.rs", "a.rs"),
+            ContainerScope::Whole,
         );
         let new_result = classify_symbols(
             &make_parse(vec![], vec![]),
             &new_parse,
-            "",
-            source,
-            "b.rs",
-            "b.rs",
+            ("", source),
+            ("b.rs", "b.rs"),
+            ContainerScope::Whole,
         );
 
         let mut all_old = old_result.unmatched_old;
@@ -1204,5 +1418,125 @@ mod tests {
     fn test_language_for_path_unknown() {
         assert_eq!(super::language_for_path("readme.md"), None);
         assert_eq!(super::language_for_path("no_extension"), None);
+    }
+
+    fn classify_rust(old: &str, new: &str, containers: ContainerScope) -> ClassifyResult {
+        let old_parse = parser::parse_file(old, "rust", "a.rs").expect("old side parses");
+        let new_parse = parser::parse_file(new, "rust", "a.rs").expect("new side parses");
+        classify_symbols(
+            &old_parse,
+            &new_parse,
+            (old, new),
+            ("a.rs", "a.rs"),
+            containers,
+        )
+    }
+
+    fn summary(changes: &[SymbolChange]) -> Vec<(&str, &str, ChangeKind)> {
+        changes
+            .iter()
+            .map(|c| (c.symbol.as_str(), c.kind.as_str(), c.change))
+            .collect()
+    }
+
+    const TWO_IMPLS: &str = "struct Foo;\n\
+        impl Foo {\n    fn a(&self) {\n        one();\n    }\n}\n\n\
+        impl Foo {\n    fn b(&self) {\n        two();\n    }\n}\n";
+
+    /// sutra/517: same-named impl blocks were keyed through a map, so every
+    /// block was compared against the last one and reported the same
+    /// spurious callee diff.
+    #[test]
+    fn same_named_impl_blocks_pair_with_their_own_counterpart() {
+        let new = TWO_IMPLS.replace("two()", "three()");
+        let result = classify_rust(TWO_IMPLS, &new, ContainerScope::Whole);
+        assert_eq!(
+            summary(&result.changes),
+            vec![
+                ("Foo", "impl", ChangeKind::BodyChanged),
+                ("Foo::b", "method", ChangeKind::BodyChanged),
+            ],
+            "only the second block changed"
+        );
+        for c in &result.changes {
+            let cd = c
+                .callee_diff
+                .as_ref()
+                .expect("both changes swapped a callee");
+            assert_eq!(cd.added, vec!["three"]);
+            assert_eq!(cd.removed, vec!["two"]);
+        }
+        assert!(result.unmatched_old.is_empty() && result.unmatched_new.is_empty());
+    }
+
+    #[test]
+    fn an_added_impl_block_of_an_existing_name_is_unmatched_not_changed() {
+        let old = "struct Foo;\nimpl Foo {\n    fn a(&self) {}\n}\n";
+        let new = format!("{old}\nimpl Foo {{\n    fn b(&self) {{}}\n}}\n");
+        let result = classify_rust(old, &new, ContainerScope::Whole);
+        assert!(result.changes.is_empty(), "{:?}", summary(&result.changes));
+        let added: Vec<&str> = result
+            .unmatched_new
+            .iter()
+            .map(|u| u.kind.as_str())
+            .collect();
+        assert_eq!(added, vec!["impl", "method"]);
+    }
+
+    #[test]
+    fn own_scope_reports_a_member_change_on_the_member_alone() {
+        let new = TWO_IMPLS.replace("two()", "three()");
+        let result = classify_rust(TWO_IMPLS, &new, ContainerScope::Own);
+        assert_eq!(
+            summary(&result.changes),
+            vec![("Foo::b", "method", ChangeKind::BodyChanged)]
+        );
+    }
+
+    #[test]
+    fn own_scope_ignores_a_member_doc_comment_but_not_the_containers_own_lines() {
+        let old = "mod m {\n    use a::x;\n\n    fn f() {\n        x();\n    }\n}\n";
+        let documented = old.replace("    fn f()", "    /// Calls x.\n    fn f()");
+        let result = classify_rust(old, &documented, ContainerScope::Own);
+        assert!(
+            result.changes.iter().all(|c| c.kind != "module"),
+            "a member's doc comment is the member's: {:?}",
+            summary(&result.changes)
+        );
+
+        let imported = old.replace("use a::x;", "use a::x;\n    use a::y;");
+        let result = classify_rust(old, &imported, ContainerScope::Own);
+        assert_eq!(
+            summary(&result.changes),
+            vec![("m", "module", ChangeKind::BodyChanged)]
+        );
+    }
+
+    #[test]
+    fn fields_of_an_added_type_fold_into_it() {
+        let change = |symbol: &str, kind: &str, change| SymbolChange {
+            symbol: symbol.to_string(),
+            kind: kind.to_string(),
+            change,
+            callee_diff: None,
+            from_symbol: None,
+            from_file: None,
+        };
+        let mut changes = vec![
+            change("Encode", "struct", ChangeKind::Added),
+            change("Encode::first", "field", ChangeKind::Added),
+            change("Corpus::always_eligible", "field", ChangeKind::Added),
+            change("Old::gone", "field", ChangeKind::Deleted),
+            change("Old", "struct", ChangeKind::Deleted),
+        ];
+        fold_fields(&mut changes);
+        assert_eq!(
+            summary(&changes),
+            vec![
+                ("Encode", "struct", ChangeKind::Added),
+                ("Corpus::always_eligible", "field", ChangeKind::Added),
+                ("Old", "struct", ChangeKind::Deleted),
+            ]
+        );
     }
 }

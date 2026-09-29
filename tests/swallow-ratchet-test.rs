@@ -202,7 +202,7 @@ fn review_reads_the_worktree_and_lists_justifications() {
     let fx = fixture();
     write(&fx.ws.root, "src/lib.rs", EDITED);
 
-    let out = review::handle(&fx.db, &fx.ws.root, Some("unstaged"), None, false).unwrap();
+    let out = review::handle(&fx.db, &fx.ws.root, Some("unstaged"), None).unwrap();
 
     let lines: Vec<&serde_json::Value> = out["constraint_violations"]
         .as_array()
@@ -317,7 +317,7 @@ fn review_at_head_reads_base_to_worktree_for_findings_and_event() {
         "pub fn other(s: &str) -> Option<u8> {\n    s.parse().ok()\n}\n",
     );
 
-    let out = review::handle(&fx.db, r, Some("HEAD"), None, false).unwrap();
+    let out = review::handle(&fx.db, r, Some("HEAD"), None).unwrap();
     assert_eq!(
         violation_sites(&out),
         vec![
@@ -344,7 +344,7 @@ fn review_at_head_reads_base_to_worktree_for_findings_and_event() {
 
     // Commit the dirty edits: the same base-to-content change, now at HEAD.
     git(r, &["commit", "-q", "--no-verify", "-am", "dirty"]);
-    let again = review::handle(&fx.db, r, Some("HEAD~2..HEAD"), None, false).unwrap();
+    let again = review::handle(&fx.db, r, Some("HEAD~2..HEAD"), None).unwrap();
     assert_eq!(violation_sites(&again), violation_sites(&out));
     assert_eq!(events(&fx), first, "the committed change is the same event");
     assert_eq!(pattern_firings(&fx).len(), 3, "and the same sites");
@@ -360,7 +360,7 @@ fn staged_review_reads_the_index_not_the_worktree() {
     git(r, &["add", "-A"]);
     write(r, "src/lib.rs", SEED);
 
-    let out = review::handle(&fx.db, r, Some("staged"), None, false).unwrap();
+    let out = review::handle(&fx.db, r, Some("staged"), None).unwrap();
     assert_eq!(violation_sites(&out), vec![("src/lib.rs".to_string(), 5)]);
     assert!(out.get("constraint_firing_log_error").is_none(), "{out}");
     assert_eq!(pattern_firings(&fx).len(), 1);

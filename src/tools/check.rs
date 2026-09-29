@@ -17,6 +17,7 @@ use crate::constraints::check::DiffHead;
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{ConstraintParseError, Severity};
+use crate::tools::changed_symbols::ChangedSymbols;
 use crate::tools::{dup_exists, orphans, review, sibling_pattern};
 use crate::waivers::Waived;
 
@@ -48,6 +49,9 @@ pub struct CheckReport {
     /// Why the constraint findings were not recorded in the firing log, if
     /// they were not (sutra/486). Reported, never gating.
     pub firing_log_error: Option<String>,
+    /// What the diff changed, per symbol: the same set `sutra_review` reports
+    /// (sutra/517). `None` in a report built without a diff.
+    pub changed_symbols: Option<ChangedSymbols>,
 }
 
 impl CheckReport {
@@ -123,6 +127,8 @@ pub fn handle(
         registry,
     );
 
+    let changed_symbols = review::changed_symbols(db, workspace_root, &scope)?;
+
     let (blocking, below_threshold): (Vec<_>, Vec<_>) = findings
         .constraint_violations
         .into_iter()
@@ -140,6 +146,7 @@ pub fn handle(
         orphans: Some(orphans),
         dup_exists: Some(dup_exists),
         firing_log_error,
+        changed_symbols: Some(changed_symbols),
     })
 }
 
@@ -244,6 +251,9 @@ pub fn render_human(report: &CheckReport) -> String {
             let line = f.line.map(|l| format!(":{l}")).unwrap_or_default();
             let _ = writeln!(out, "  {}{line}  {name}: {}", f.from_path, w.rationale);
         }
+    }
+    if let Some(changed) = &report.changed_symbols {
+        changed.render(&mut out);
     }
     if let Some(advisory) = &report.sibling_patterns {
         render_sibling_patterns(advisory, &mut out);
@@ -360,6 +370,7 @@ pub fn to_json(report: &CheckReport) -> serde_json::Value {
         "orphans": report.orphans.as_ref().map(orphans::Advisory::to_json),
         "dup_exists": report.dup_exists.as_ref().map(dup_exists::Advisory::to_json),
         "constraint_firing_log_error": report.firing_log_error,
+        "changed_symbols": report.changed_symbols.as_ref().map(ChangedSymbols::to_json),
     })
 }
 
@@ -408,6 +419,7 @@ mod tests {
             orphans: None,
             dup_exists: None,
             firing_log_error: None,
+            changed_symbols: None,
         }
     }
 

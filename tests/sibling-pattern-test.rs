@@ -471,22 +471,16 @@ fn sibling_findings_never_gate_or_score() {
     );
 
     let review = |fx: &Fixture| {
-        let out = review::handle(&fx.db, fx.root.path(), Some("HEAD"), None, false).unwrap();
+        let out = review::handle(&fx.db, fx.root.path(), Some("HEAD"), None).unwrap();
         let findings = out["sibling_patterns"]["findings"]
             .as_array()
             .map_or(0, Vec::len);
-        (
-            out["risk_score"].clone(),
-            out["risk_breakdown"].clone(),
-            findings,
-        )
+        // The review carries no score for a finding to move (sutra/517).
+        assert!(out.get("risk_score").is_none(), "{out}");
+        assert!(out.get("risk_breakdown").is_none(), "{out}");
+        findings
     };
-    let (risk_with, breakdown_with, findings_with) = review(&with);
-    let (risk_without, breakdown_without, findings_without) = review(&without);
-    assert_eq!((findings_with, findings_without), (1, 0));
-    assert!(risk_with.is_number(), "{risk_with}");
-    assert_eq!(risk_with, risk_without);
-    assert_eq!(breakdown_with, breakdown_without);
+    assert_eq!((review(&with), review(&without)), (1, 0));
 }
 
 /// An unstaged review reads only the files the index says hold an idiom's

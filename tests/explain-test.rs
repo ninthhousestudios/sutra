@@ -1,6 +1,5 @@
 use sutra::db::{Db, InsertSymbolParams};
-use sutra::tools::review::ReviewFindings;
-use sutra::tools::{impact, map, pr_risk, review};
+use sutra::tools::{impact, map, pr_risk};
 
 fn sym<'a>(
     file_id: i64,
@@ -170,55 +169,6 @@ fn pr_risk_explain_false_has_no_explain_key() {
 }
 
 #[test]
-fn review_explain_true_has_weights() {
-    let (_dir, db) = setup_db();
-    let changed = vec!["src/a.rs".to_string()];
-    let findings = ReviewFindings::default();
-    let result = review::compute(
-        &db,
-        std::path::Path::new("/tmp"),
-        &changed,
-        &Default::default(),
-        &findings,
-        true,
-    )
-    .unwrap();
-
-    let explain = &result["_explain"];
-    assert!(explain.is_object());
-    assert!(explain["formula"].is_string());
-
-    let weights = &explain["weights"];
-    for key in &["blast_radius", "complexity", "hotspot_overlap", "churn"] {
-        let w = &weights[key];
-        assert!(w["weight"].is_number(), "{key} must have weight");
-        assert!(w["ceiling"].is_number(), "{key} must have numeric ceiling");
-        assert!(
-            w["contribution"].is_number(),
-            "{key} must have contribution"
-        );
-        assert!(w["rationale"].is_string(), "{key} must have rationale");
-    }
-}
-
-#[test]
-fn review_explain_false_has_no_explain_key() {
-    let (_dir, db) = setup_db();
-    let changed = vec!["src/a.rs".to_string()];
-    let findings = ReviewFindings::default();
-    let result = review::compute(
-        &db,
-        std::path::Path::new("/tmp"),
-        &changed,
-        &Default::default(),
-        &findings,
-        false,
-    )
-    .unwrap();
-    assert!(result.get("_explain").is_none());
-}
-
-#[test]
 fn pr_risk_explain_true_empty_diff_has_explain() {
     let (_dir, db) = setup_db();
     let result = pr_risk::compute(&db, &[], &Default::default(), true).unwrap();
@@ -234,54 +184,4 @@ fn pr_risk_explain_true_empty_diff_has_explain() {
         assert!(sig["ceiling"].is_number(), "{key} must have ceiling");
         assert_eq!(sig["contribution"], 0.0, "{key} contribution must be 0");
     }
-}
-
-#[test]
-fn review_explain_true_empty_diff_has_explain() {
-    let (_dir, db) = setup_db();
-    let findings = ReviewFindings::default();
-    let result = review::compute(
-        &db,
-        std::path::Path::new("/tmp"),
-        &[],
-        &Default::default(),
-        &findings,
-        true,
-    )
-    .unwrap();
-    assert_eq!(result["risk_score"], 0.0);
-    let explain = &result["_explain"];
-    assert!(
-        explain.is_object(),
-        "_explain must be present on empty diff"
-    );
-    assert!(explain["formula"].is_string());
-    for key in &["blast_radius", "complexity", "hotspot_overlap", "churn"] {
-        let w = &explain["weights"][key];
-        assert!(w["weight"].is_number(), "{key} must have weight");
-        assert!(w["ceiling"].is_number(), "{key} must have numeric ceiling");
-        assert_eq!(w["contribution"], 0.0, "{key} contribution must be 0");
-    }
-}
-
-#[test]
-fn review_explain_hotspot_ceiling_is_numeric() {
-    let (_dir, db) = setup_db();
-    let changed = vec!["src/a.rs".to_string()];
-    let findings = ReviewFindings::default();
-    let result = review::compute(
-        &db,
-        std::path::Path::new("/tmp"),
-        &changed,
-        &Default::default(),
-        &findings,
-        true,
-    )
-    .unwrap();
-    let ceiling = &result["_explain"]["weights"]["hotspot_overlap"]["ceiling"];
-    assert!(
-        ceiling.is_number(),
-        "hotspot ceiling must be numeric, got {ceiling}"
-    );
-    assert_eq!(ceiling.as_f64().unwrap(), 1.0);
 }

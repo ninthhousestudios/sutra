@@ -75,48 +75,32 @@ Returns per-workspace file counts, symbol counts, parse errors, and staleness.",
     },
     Topic {
         name: "review",
-        summary: "Review diffs with structural analysis and risk scoring",
+        summary: "Review a diff: per-symbol changes, constraint violations, write-side advisories",
         content: "\
 # Review
 
-`sutra_review` is a structural review compositor. It diffs your current branch, \
-identifies changed symbols, computes transitive impact, and produces a risk score \
-with ranked recommended reads.
+`sutra_review` reviews a diff. Every item it reports names a site; it reports \
+no score.
 
 ## Review current branch
 ```
 sutra_review(workspace=\"myproject\")
 ```
-Diffs against main merge-base. Returns:
-- Changed files and symbols
-- Transitive impact (who calls what you changed)
-- Risk score (0.0–1.0) with per-signal breakdown (blast radius, complexity, churn, conventions)
-- Recommended reads ranked by review priority
+Diffs against the main merge-base. Pass `diff=\"<base>..<head>\"` for a commit \
+range, `diff=\"staged\"` or `diff=\"unstaged\"` for uncommitted work. Returns:
+- `constraint_violations`: forbidden deps, cycles, fan-in ceilings and forbidden \
+patterns the diff introduced (plus waived and justified matches)
+- `dup_exists`: added code that resembles an existing function
+- `sibling_patterns`: an idiom the diff removed that survives elsewhere
+- `orphans`: added symbols nothing outside tests uses
+- `behavioral_coupling`: co-change partners with no static edge to the change
+- `changed_files[].symbol_changes`: per symbol, added / deleted / \
+signature_changed / body_changed / renamed / moved, with each body change's \
+callee diff. A member's change is reported on the member, not its `impl`.
+- `changed_symbols`: the same changes flattened, with cognitive complexity
 
-## Review staged changes only
-```
-sutra_review(workspace=\"myproject\", diff=\"staged\")
-```
-
-## Review unstaged changes
-```
-sutra_review(workspace=\"myproject\", diff=\"unstaged\")
-```
-
-## Interpret the risk score
-The score combines weighted signals:
-- **Blast radius** — how many symbols are transitively affected
-- **Complexity** — cognitive complexity of changed code
-- **Hotspot churn** — how often changed files have been modified recently
-- **Convention violations** — naming or structural patterns broken
-
-A score above 0.5 warrants careful review. Above 0.7 is high-risk.
-
-## Complement with PR risk
-```
-sutra_pr_risk(workspace=\"myproject\")
-```
-Similar composite score but includes volume signals and per-symbol risk breakdown.",
+`sutra check --diff <spec>` reports the same findings and changed symbols on \
+the CLI, and runs as a pre-commit gate.",
     },
     Topic {
         name: "query",
@@ -224,8 +208,8 @@ files are syntactically valid.",
 sutra_workspace(path=\"/home/user/project\")
 sutra_review(workspace=\"myproject\")
 ```
-Returns risk score, changed symbols, transitive impact, convention violations, \
-and recommended reads sorted by review priority.
+Returns constraint violations, the dup_exists / sibling_patterns / orphans / \
+behavioral_coupling advisories, and the changed symbols with their callee diffs.
 
 ## Find callers and affected tests for a function
 ```

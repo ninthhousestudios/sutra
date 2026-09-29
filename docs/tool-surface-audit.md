@@ -134,6 +134,27 @@ classified `added` / `deleted` / `signature_changed` / `body_changed` with a
 callee diff. The one tool nobody calls holds the precise data, and the tool
 everybody calls holds the noise.
 
+**Fixed (sutra/517).** review and `sutra check` both report
+`symbol_diff::diff_files`'s changes (`tools/changed_symbols.rs`). Every
+dropped field in the fold contract below is gone, `affected_*` included, and
+so is review's `explain` argument. On the sutra/510–511 range the list went
+from ~290 symbols to 20. Three choices the contract left open:
+
+- **Duplicate names.** Same-named symbols (`impl Foo` blocks, `Foo::fmt` in
+  two trait impls) pair identical bodies first, then in source order.
+- **Containers.** An `impl`, module or struct is compared on its own lines,
+  outside its members (`ContainerScope::Own`). A member's doc comments and
+  attributes count as the member's. A method edit reports the method, not
+  the `impl`. The other `classify_symbols` callers (sibling_pattern,
+  dup_exists, orphans) keep `ContainerScope::Whole`, so their behaviour is
+  unchanged. A field added or deleted along with its whole struct is folded
+  into the struct.
+- **Flattening.** `changed_symbols` entries are {symbol, kind, change, file,
+  cognitive}, plus from_symbol/from_file for renames and moves. The callee
+  diff stays on `changed_files[].symbol_changes`, so it isn't sent twice.
+  `cognitive` is null for a deleted symbol, or one the index has no metric
+  for (it used to be 0).
+
 ### F4. vidhi-review points agents at the noise and never names the signal
 
 vidhi-review step 3 describes `sutra_review` as a risk score, affected

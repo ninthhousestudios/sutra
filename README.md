@@ -230,7 +230,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_provenance` | Git history of a symbol's file with commit classification (feature, bugfix, refactor, etc.) |
 | `sutra_trace` | Trace call chains — forward (entry points → symbol) or backward (symbol → leaves). Detects cycles |
 | `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
-| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, HRR shape changes, and ranks recommended reads |
+| `sutra_review` | Structural review of a diff — per-symbol changes with callee diffs, constraint violations, and the dup_exists / sibling_patterns / orphans / behavioral_coupling advisories |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
 | `sutra_similar` | Find structurally similar functions (with symbol) or near-duplicate pattern families (without symbol) |
@@ -254,11 +254,11 @@ One call replaces the iterative `sutra_map` → `sutra_outline` → `sutra_symbo
 
 ```
 Agent: sutra_review(diff="branch")
-→ risk score (0.0–1.0) with per-signal breakdown
+→ changed symbols: added / deleted / signature_changed / body_changed, with callee diffs
 → constraint violations (blocking/advisory)
+→ dup_exists, sibling_patterns, orphans: write-side advisories that name sites
 → behavioral coupling: co-change partners with no static edge that the diff didn't touch
 → HRR shape changes (subtle structural shifts)
-→ recommended files to inspect manually
 ```
 
 ### Investigate a symbol

@@ -37,7 +37,7 @@ pub fn handle(
     let paths: Vec<String> = diff_entries.iter().map(|e| e.path.to_string()).collect();
     let signals = change_signals::gather(db, &paths, &ChurnMap::default(), true)?;
 
-    let diff_result = symbol_diff::diff_files(workspace_root, &diff_entries, base, head);
+    let diff_result = symbol_diff::diff_files(workspace_root, &diff_entries, base, Some(head));
 
     let changed_files: Vec<_> = signals
         .per_file

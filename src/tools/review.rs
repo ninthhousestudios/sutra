@@ -17,8 +17,8 @@ use crate::freshness::{self, FreshnessLevel};
 use crate::git;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules;
-use crate::tools::change_signals::{self, ChurnMap};
-use crate::tools::scoring::{self, Signal};
+use crate::tools::changed_symbols::ChangedSymbols;
+use crate::tools::scoring;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
@@ -27,21 +27,7 @@ pub struct ReviewArgs {
     /// "branch" (default), "staged", "unstaged", or a commit spec (e.g. "HEAD~3..HEAD", "abc123")
     #[serde(default)]
     pub diff: Option<String>,
-    /// When true, include `_explain` with weights, ceilings, and per-signal contributions.
-    #[serde(default)]
-    pub explain: Option<bool>,
 }
-
-const MAX_AFFECTED: usize = 20;
-const MAX_READS: usize = 10;
-
-// Renormalized after removing the deviations factor (sutra/313): weights
-// previously summed to 1.0 including deviations (weight 0.2); scaling the
-// remaining four by 1/0.8 preserves that invariant.
-const W_BLAST: f64 = 0.375;
-const W_COMPLEXITY: f64 = 0.25;
-const W_HOTSPOT: f64 = 0.1875;
-const W_CHURN: f64 = 0.1875;
 
 pub use crate::constraints::ConstraintFinding;
 use crate::waivers::Waived;
@@ -69,18 +55,13 @@ pub fn handle(
     workspace_root: &Path,
     diff_mode: Option<&str>,
     dd_engine: Option<&DdEngine>,
-    explain: bool,
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
     let scope = worktree_overlay(workspace_root, resolve_diff_entries(workspace_root, mode)?)?;
     let changed_paths = scope.paths();
     let (base_revision, head_revision) = (&scope.base_revision, &scope.head_revision);
-
-    let churn = ChurnMap {
-        counts: git::git_churn(workspace_root, change_signals::CHURN_WINDOW_DAYS)?,
-        window_days: change_signals::CHURN_WINDOW_DAYS,
-    };
+    let changed_symbols = changed_symbols(db, workspace_root, &scope)?;
 
     let registry = crate::parser::adapter::default_registry();
     // One snapshot for paths, hunks, content and the event patch (sutra/495).
@@ -160,20 +141,14 @@ pub fn handle(
         db,
         workspace_root,
         &changed_paths,
-        &churn,
+        &changed_symbols,
         &findings,
-        explain,
     )?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
-        obj.insert(
-            "churn_window_days".into(),
-            json!(change_signals::CHURN_WINDOW_DAYS),
-        );
         if let Some(err) = findings_error {
             obj.insert("findings_degraded".into(), json!(true));
             obj.insert("findings_error".into(), json!(err));
-            obj.insert("risk_score".into(), json!(null));
         }
 
         let shape_out: Vec<_> = shape_changes
@@ -231,6 +206,21 @@ impl DiffScope {
             None => ContentSource::Worktree,
         }
     }
+}
+
+/// Diff the symbols of `scope`'s files, reading each side as the scope does.
+pub fn changed_symbols(
+    db: &Db,
+    workspace_root: &Path,
+    scope: &DiffScope,
+) -> Result<ChangedSymbols> {
+    let diff = crate::tools::symbol_diff::diff_files(
+        workspace_root,
+        &scope.entries,
+        &scope.base_revision,
+        scope.head_revision.as_deref(),
+    );
+    ChangedSymbols::from_diff(db, &scope.paths(), diff)
 }
 
 /// The review compositor assesses current state (sutra/385): when the
@@ -637,131 +627,39 @@ fn behavioral_coupling(
     Ok(entries.into_iter().map(|(_, v)| v).collect())
 }
 
-fn build_recommended_reads(
-    db: &Db,
-    workspace_root: &Path,
-    affected_files: &[change_signals::AffectedFile],
-    behavioral_partners: &[serde_json::Value],
-) -> Vec<serde_json::Value> {
-    let mut seen = std::collections::HashSet::new();
-    let mut reads: Vec<(String, i64, bool)> = Vec::new();
-    for bp in behavioral_partners {
-        if let Some(partner) = bp["partner"].as_str()
-            && seen.insert(partner.to_string())
-        {
-            let blast = db
-                .file_by_path(partner)
-                .ok()
-                .flatten()
-                .map(|f| f.blast_radius)
-                .unwrap_or(0);
-            reads.push((partner.to_string(), blast, true));
-        }
-    }
-    for a in affected_files {
-        if !seen.contains(&a.path) {
-            reads.push((a.path.clone(), a.blast_radius, false));
-        }
-    }
-    reads.truncate(MAX_READS);
-
-    reads
-        .iter()
-        .map(|(path, blast, is_behavioral)| {
-            let fl = file_freshness(db, workspace_root, path);
-            let mut entry = json!({ "path": path, "blast_radius": blast, "_freshness": fl });
-            if *is_behavioral {
-                entry["behavioral_partner"] = json!(true);
-            }
-            entry
-        })
-        .collect()
-}
-
+/// The review's JSON: what changed, per file and per symbol, and the
+/// constraint findings over it. No score: a number saturates under a flat
+/// blast radius and gets quoted instead of the sites (sutra/517).
 pub fn compute(
     db: &Db,
     workspace_root: &Path,
     changed_paths: &[String],
-    churn: &ChurnMap,
+    changed: &ChangedSymbols,
     findings: &ReviewFindings,
-    explain: bool,
 ) -> Result<serde_json::Value> {
     if changed_paths.is_empty() {
-        let mut result = json!({
+        return Ok(json!({
             "changed_files": [],
             "changed_symbols": [],
-            "affected_files": [],
-            "affected_symbols": [],
-            "affected_total": { "files": 0, "symbols": 0 },
-            "risk_score": 0.0,
-            "risk_breakdown": {
-                "blast_radius": 0.0, "complexity_delta": 0.0,
-                "hotspot_overlap": 0.0, "churn": 0.0,
-            },
-            "recommended_reads": [],
             "constraint_violations": [],
             "resolved_constraint_violations": [],
             "constraint_violations_total": 0,
             "waived_constraint_violations": [],
-        });
-        if explain {
-            result["_explain"] = json!({
-                "formula": "sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]",
-                "weights": {
-                    "blast_radius": { "weight": W_BLAST, "ceiling": change_signals::BLAST_NORM, "contribution": 0.0, "rationale": "blast radius of changed symbols" },
-                    "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": 0.0, "rationale": "peak cognitive complexity in changed code" },
-                    "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": 1.0, "contribution": 0.0, "rationale": "proportion of changed files that are churn hotspots" },
-                    "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": 0.0, "rationale": "total recent churn across changed files" },
-                },
-            });
-        }
-        return Ok(result);
+        }));
     }
 
-    let signals = change_signals::gather(db, changed_paths, churn, true)?;
-
-    let changed_files_out: Vec<_> = signals
-        .per_file
+    let changed_files_out: Vec<_> = changed
+        .files
         .iter()
         .map(|f| {
             let fl = file_freshness(db, workspace_root, &f.path);
-            json!({
-                "path": f.path, "blast_radius": f.blast_radius,
-                "symbol_count": f.symbols.len(), "_freshness": fl,
-            })
-        })
-        .collect();
-    let changed_symbols_out: Vec<_> = signals
-        .per_file
-        .iter()
-        .flat_map(|f| {
-            f.symbols.iter().map(|s| {
-                json!({
-                    "symbol": s.qualified_name, "file": f.path, "cognitive": s.cognitive,
-                })
-            })
-        })
-        .collect();
-
-    let total_affected_files = signals.affected_files.len();
-    let total_affected_symbols = signals.affected_symbols.len();
-
-    let affected_files_out: Vec<_> = signals
-        .affected_files
-        .iter()
-        .take(MAX_AFFECTED)
-        .map(|a| {
-            let fl = file_freshness(db, workspace_root, &a.path);
-            json!({ "path": a.path, "blast_radius": a.blast_radius, "_freshness": fl })
-        })
-        .collect();
-    let affected_symbols_out: Vec<_> = signals
-        .affected_symbols
-        .iter()
-        .take(MAX_AFFECTED)
-        .map(|a| {
-            let fl = file_freshness(db, workspace_root, &a.file);
-            json!({ "symbol": a.qualified_name, "file": a.file, "blast_radius": a.blast_radius, "cognitive": a.cognitive, "_freshness": fl })
+            let mut entry = json!({
+                "path": f.path, "symbol_changes": f.changes, "_freshness": fl,
+            });
+            if let Some(err) = &f.error {
+                entry["symbol_diff_error"] = json!(err);
+            }
+            entry
         })
         .collect();
 
@@ -848,66 +746,19 @@ pub fn compute(
             entry
         })
         .collect();
-    let file_count = changed_paths.len();
-    let blast_score = scoring::normalize(signals.total_blast as f64, change_signals::BLAST_NORM);
-    let complexity_score = scoring::normalize(
-        signals.max_cognitive.unwrap_or(0) as f64,
-        change_signals::COMPLEXITY_NORM,
-    );
-    let hotspot_ceiling = (file_count as f64).max(1.0);
-    let hotspot_score = scoring::normalize(signals.hotspot_files as f64, hotspot_ceiling);
-    let churn_score = scoring::normalize(signals.total_churn as f64, change_signals::CHURN_NORM);
-
-    let risk_score = scoring::weighted_score(&[
-        Signal {
-            weight: W_BLAST,
-            score: blast_score,
-        },
-        Signal {
-            weight: W_COMPLEXITY,
-            score: complexity_score,
-        },
-        Signal {
-            weight: W_HOTSPOT,
-            score: hotspot_score,
-        },
-        Signal {
-            weight: W_CHURN,
-            score: churn_score,
-        },
-    ]);
-
     let (behavioral, behavioral_error) =
         match behavioral_coupling(db, workspace_root, changed_paths) {
             Ok(entries) => (entries, None),
             Err(e) => (Vec::new(), Some(e.to_string())),
         };
-    let recommended_reads =
-        build_recommended_reads(db, workspace_root, &signals.affected_files, &behavioral);
 
     let mut result = json!({
         "changed_files": changed_files_out,
-        "changed_symbols": changed_symbols_out,
-        "affected_files": affected_files_out,
-        "affected_symbols": affected_symbols_out,
-        "affected_total": {
-            "files": total_affected_files,
-            "files_truncated": total_affected_files > MAX_AFFECTED,
-            "symbols": total_affected_symbols,
-            "symbols_truncated": total_affected_symbols > MAX_AFFECTED,
-        },
-        "risk_score": scoring::round3(risk_score),
-        "risk_breakdown": {
-            "blast_radius": scoring::round3(blast_score),
-            "complexity_delta": scoring::round3(complexity_score),
-            "hotspot_overlap": scoring::round3(hotspot_score),
-            "churn": scoring::round3(churn_score),
-        },
+        "changed_symbols": changed.to_json(),
         "constraint_violations": constraint_violations_out,
         "resolved_constraint_violations": resolved_constraint_violations_out,
         "constraint_violations_total": findings.constraint_violations_total,
         "waived_constraint_violations": waived_constraint_violations_out,
-        "recommended_reads": recommended_reads,
     });
     if !behavioral.is_empty() {
         result["behavioral_coupling"] = json!(behavioral);
@@ -946,17 +797,6 @@ pub fn compute(
                 }))
                 .collect::<Vec<_>>()
         );
-    }
-    if explain {
-        result["_explain"] = json!({
-            "formula": "sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]",
-            "weights": {
-                "blast_radius": { "weight": W_BLAST, "ceiling": change_signals::BLAST_NORM, "contribution": scoring::round3(W_BLAST * blast_score), "rationale": "blast radius of changed symbols" },
-                "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": scoring::round3(W_COMPLEXITY * complexity_score), "rationale": "peak cognitive complexity in changed code" },
-                "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": hotspot_ceiling, "contribution": scoring::round3(W_HOTSPOT * hotspot_score), "rationale": "proportion of changed files that are churn hotspots" },
-                "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": scoring::round3(W_CHURN * churn_score), "rationale": "total recent churn across changed files" },
-            },
-        });
     }
     Ok(result)
 }

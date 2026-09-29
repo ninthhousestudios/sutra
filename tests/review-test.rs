@@ -6,8 +6,9 @@ use sutra::constraints::check::FindingDelta;
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::parser::adapter::default_registry;
 use sutra::rules::Severity;
-use sutra::tools::change_signals::ChurnMap;
+use sutra::tools::changed_symbols::ChangedSymbols;
 use sutra::tools::review;
+use sutra::tools::symbol_diff::{ChangeKind, DiffFilesResult, SymbolChange};
 use sutra::waivers::Waived;
 
 /// Every line of every changed file counts as added. These tests exercise the
@@ -73,39 +74,63 @@ fn no_findings() -> review::ReviewFindings {
     review::ReviewFindings::default()
 }
 
+/// The symbol changes of `paths` when the diff classified none.
+fn changes(db: &Db, paths: &[String]) -> ChangedSymbols {
+    with_changes(db, paths, Vec::new())
+}
+
+/// The symbol changes of `paths`, as the diff classified them.
+fn with_changes(db: &Db, paths: &[String], per_file: Vec<(&str, SymbolChange)>) -> ChangedSymbols {
+    let mut diff = DiffFilesResult {
+        per_file: Default::default(),
+        errors: Default::default(),
+    };
+    for (path, change) in per_file {
+        diff.per_file
+            .entry(path.to_string())
+            .or_default()
+            .push(change);
+    }
+    ChangedSymbols::from_diff(db, paths, diff).unwrap()
+}
+
+fn change(symbol: &str, change: ChangeKind) -> SymbolChange {
+    SymbolChange {
+        symbol: symbol.to_string(),
+        kind: "function".to_string(),
+        change,
+        callee_diff: None,
+        from_symbol: None,
+        from_file: None,
+    }
+}
+
+/// Fields the review dropped in sutra/517: a saturating score, blast-radius
+/// ties and whole-file symbol lists.
+const DROPPED: &[&str] = &[
+    "risk_score",
+    "risk_breakdown",
+    "recommended_reads",
+    "affected_files",
+    "affected_symbols",
+    "affected_total",
+    "churn_window_days",
+    "_explain",
+];
+
 // ── Structural core tests (from v1/13) ──────────────────────────────
 
 #[test]
 fn empty_diff_returns_correct_shape() {
     let (dir, db) = setup_db();
-    let result = review::compute(
-        &db,
-        dir.path(),
-        &[],
-        &Default::default(),
-        &no_findings(),
-        false,
-    )
-    .unwrap();
+    let result = review::compute(&db, dir.path(), &[], &changes(&db, &[]), &no_findings()).unwrap();
 
     assert_eq!(result["changed_files"].as_array().unwrap().len(), 0);
     assert_eq!(result["changed_symbols"].as_array().unwrap().len(), 0);
-    assert_eq!(result["affected_files"].as_array().unwrap().len(), 0);
-    assert_eq!(result["affected_symbols"].as_array().unwrap().len(), 0);
-    assert_eq!(result["affected_total"]["files"].as_u64().unwrap(), 0);
-    assert_eq!(result["affected_total"]["symbols"].as_u64().unwrap(), 0);
-
-    let risk = result["risk_score"].as_f64().unwrap();
-    assert!((risk - 0.0).abs() < f64::EPSILON);
-
-    let breakdown = &result["risk_breakdown"];
-    assert!(breakdown["blast_radius"].as_f64().is_some());
-    assert!(breakdown["complexity_delta"].as_f64().is_some());
-    assert!(breakdown["hotspot_overlap"].as_f64().is_some());
-    assert!(breakdown["churn"].as_f64().is_some());
-
-    assert_eq!(result["recommended_reads"].as_array().unwrap().len(), 0);
     assert_eq!(result["constraint_violations"].as_array().unwrap().len(), 0);
+    for field in DROPPED {
+        assert!(result.get(field).is_none(), "{field} was dropped: {result}");
+    }
 }
 
 fn setup_db_with_files() -> (tempfile::TempDir, Db) {
@@ -168,39 +193,77 @@ fn setup_db_with_files() -> (tempfile::TempDir, Db) {
 }
 
 #[test]
-fn single_file_change_populates_all_fields() {
+fn changed_symbols_are_the_diffs_changes_not_the_whole_file() {
     let (dir, db) = setup_db_with_files();
-    let changed = vec!["src/core.rs".to_string()];
+    let f_core = db.file_by_path("src/core.rs").unwrap().unwrap();
+    db.insert_symbol(&sym(
+        f_core.id,
+        "core::untouched",
+        "untouched",
+        None,
+        41,
+        60,
+        Some(9),
+    ))
+    .unwrap();
+    let changed = vec!["src/core.rs".to_string(), "README.md".to_string()];
+    let mut body = change("core::process", ChangeKind::BodyChanged);
+    body.callee_diff = Some(sutra::tools::symbol_diff::CalleeDiff {
+        added: vec!["validate".into()],
+        removed: vec![],
+    });
     let result = review::compute(
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &with_changes(
+            &db,
+            &changed,
+            vec![
+                ("src/core.rs", body),
+                ("src/core.rs", change("core::gone", ChangeKind::Deleted)),
+            ],
+        ),
         &no_findings(),
-        false,
     )
     .unwrap();
 
     let cf = result["changed_files"].as_array().unwrap();
-    assert_eq!(cf.len(), 1);
+    assert_eq!(cf.len(), 2, "every changed file is listed");
     assert_eq!(cf[0]["path"], "src/core.rs");
-    assert!(cf[0]["blast_radius"].as_i64().unwrap() > 0);
+    assert!(cf[0].get("blast_radius").is_none());
+    assert!(cf[0].get("symbol_count").is_none());
+    let sc = cf[0]["symbol_changes"].as_array().unwrap();
+    assert_eq!(sc.len(), 2);
+    assert_eq!(sc[0]["symbol"], "core::process");
+    assert_eq!(sc[0]["change"], "body_changed");
+    assert_eq!(sc[0]["callee_diff"]["added"][0], "validate");
+    assert_eq!(cf[1]["path"], "README.md");
+    assert_eq!(cf[1]["symbol_changes"].as_array().unwrap().len(), 0);
 
     let cs = result["changed_symbols"].as_array().unwrap();
-    assert_eq!(cs.len(), 1);
-    assert_eq!(cs[0]["symbol"], "core::process");
+    let names: Vec<&str> = cs.iter().map(|s| s["symbol"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        vec!["core::process", "core::gone"],
+        "core::untouched is in the file but not in the diff"
+    );
+    assert_eq!(cs[0]["file"], "src/core.rs");
+    assert_eq!(cs[0]["kind"], "function");
+    assert_eq!(cs[0]["change"], "body_changed");
+    assert_eq!(cs[0]["cognitive"], 20);
+    assert!(
+        cs[0].get("callee_diff").is_none(),
+        "the callee diff stays per file"
+    );
+    assert!(
+        cs[1]["cognitive"].is_null(),
+        "a deleted symbol has no metric"
+    );
 
-    let af = result["affected_files"].as_array().unwrap();
-    assert!(!af.is_empty(), "consumer.rs should be affected");
-    let affected_paths: Vec<&str> = af.iter().map(|f| f["path"].as_str().unwrap()).collect();
-    assert!(affected_paths.contains(&"src/consumer.rs"));
-
-    let risk = result["risk_score"].as_f64().unwrap();
-    assert!(risk > 0.0);
-    assert!(risk <= 1.0);
-
-    let rr = result["recommended_reads"].as_array().unwrap();
-    assert!(!rr.is_empty());
+    for field in DROPPED {
+        assert!(result.get(field).is_none(), "{field} was dropped: {result}");
+    }
 }
 
 /// A co-change read that fails must say so, not render as "no partners"
@@ -215,9 +278,8 @@ fn behavioral_coupling_failure_is_reported_not_empty() {
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &no_findings(),
-        false,
     )
     .unwrap();
 
@@ -268,9 +330,8 @@ fn behavioral_coupling_requires_two_shared_commits() {
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &no_findings(),
-        false,
     )
     .unwrap();
 
@@ -282,130 +343,6 @@ fn behavioral_coupling_requires_two_shared_commits() {
 }
 
 #[test]
-fn risk_breakdown_sums_correctly() {
-    let (dir, db) = setup_db_with_files();
-    let changed = vec!["src/core.rs".to_string(), "src/helper.rs".to_string()];
-    let mut churn = ChurnMap::default();
-    churn.counts.insert("src/core.rs".to_string(), 12);
-
-    let result = review::compute(&db, dir.path(), &changed, &churn, &no_findings(), false).unwrap();
-
-    let breakdown = &result["risk_breakdown"];
-    let blast = breakdown["blast_radius"].as_f64().unwrap();
-    let complexity = breakdown["complexity_delta"].as_f64().unwrap();
-    let hotspot = breakdown["hotspot_overlap"].as_f64().unwrap();
-    let churn_s = breakdown["churn"].as_f64().unwrap();
-
-    assert!(blast > 0.0, "blast should reflect high blast_radius");
-    assert!(complexity > 0.0, "complexity should reflect cognitive=20");
-    assert!(churn_s > 0.0, "churn should reflect 12 commits");
-
-    // Renormalized after deviations removal (sutra/313): weights summed to 1.0
-    // including deviations (0.2); the remaining four are scaled by 1/0.8.
-    let expected =
-        (0.375 * blast + 0.25 * complexity + 0.1875 * hotspot + 0.1875 * churn_s).min(1.0);
-    let risk = result["risk_score"].as_f64().unwrap();
-    assert!(
-        (risk - (expected * 1000.0).round() / 1000.0).abs() < 0.002,
-        "risk_score {risk} should match weighted sum {expected}"
-    );
-}
-
-#[test]
-fn truncation_caps_affected_lists() {
-    let (dir, db) = setup_db();
-
-    db.upsert_file("src/hub.rs", "rust", "hub", 300, true)
-        .unwrap();
-    let f_hub = db.file_by_path("src/hub.rs").unwrap().unwrap();
-    let hub_sym_id = db
-        .insert_symbol(&sym(
-            f_hub.id,
-            "hub::central",
-            "central",
-            Some("fn central()"),
-            1,
-            50,
-            Some(10),
-        ))
-        .unwrap();
-    db.update_rollups(f_hub.id, 25, 60).unwrap();
-
-    for i in 0..25 {
-        let path = format!("src/consumer_{i}.rs");
-        db.upsert_file(&path, "rust", &format!("c{i}"), 20, true)
-            .unwrap();
-        let f = db.file_by_path(&path).unwrap().unwrap();
-        let qn = format!("consumer_{i}::use_hub");
-        db.insert_symbol(&sym(f.id, &qn, "use_hub", None, 1, 10, Some(2)))
-            .unwrap();
-        db.insert_ref(f.id, Some(hub_sym_id), None, 3, 0, "call")
-            .unwrap();
-        db.update_rollups(f.id, 0, i as i64).unwrap();
-    }
-
-    let changed = vec!["src/hub.rs".to_string()];
-    let result = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &no_findings(),
-        false,
-    )
-    .unwrap();
-
-    let af = result["affected_files"].as_array().unwrap();
-    assert_eq!(af.len(), 20, "affected files should be capped at 20");
-
-    let total = &result["affected_total"];
-    assert!(
-        total["files"].as_u64().unwrap() >= 25,
-        "total should report true count"
-    );
-    assert!(
-        total["files_truncated"].as_bool().unwrap(),
-        "should be flagged as truncated"
-    );
-
-    let rr = result["recommended_reads"].as_array().unwrap();
-    assert!(rr.len() <= 10, "recommended_reads should be capped at 10");
-
-    let risk = result["risk_score"].as_f64().unwrap();
-    assert!(
-        risk > 0.3,
-        "high blast file should produce significant risk, got {risk}"
-    );
-}
-
-#[test]
-fn risk_score_clamped_to_one() {
-    let (dir, db) = setup_db();
-
-    for i in 0..30 {
-        let path = format!("src/extreme_{i}.rs");
-        db.upsert_file(&path, "rust", &format!("e{i}"), 500, true)
-            .unwrap();
-        let f = db.file_by_path(&path).unwrap().unwrap();
-        let qn = format!("extreme_{i}::danger");
-        db.insert_symbol(&sym(f.id, &qn, "danger", None, 1, 100, Some(50)))
-            .unwrap();
-        db.update_rollups(f.id, 20, 80).unwrap();
-    }
-
-    let paths: Vec<String> = (0..30).map(|i| format!("src/extreme_{i}.rs")).collect();
-    let mut churn = ChurnMap::default();
-    for p in &paths {
-        churn.counts.insert(p.clone(), 50);
-    }
-
-    let result = review::compute(&db, dir.path(), &paths, &churn, &no_findings(), false).unwrap();
-    let risk = result["risk_score"].as_f64().unwrap();
-    assert!(risk <= 1.0, "risk must be clamped to 1.0, got {risk}");
-    assert!(risk >= 0.95, "extreme risk should be near 1.0, got {risk}");
-}
-
-#[test]
 fn unknown_files_handled_gracefully() {
     let (dir, db) = setup_db();
     let changed = vec!["src/nonexistent.rs".to_string()];
@@ -413,19 +350,15 @@ fn unknown_files_handled_gracefully() {
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &no_findings(),
-        false,
     )
     .unwrap();
 
     let cf = result["changed_files"].as_array().unwrap();
     assert_eq!(cf.len(), 1);
     assert_eq!(cf[0]["path"], "src/nonexistent.rs");
-    assert_eq!(cf[0]["blast_radius"].as_i64().unwrap(), 0);
-
-    let risk = result["risk_score"].as_f64().unwrap();
-    assert!(risk >= 0.0);
+    assert_eq!(cf[0]["symbol_changes"].as_array().unwrap().len(), 0);
 }
 
 // ── DD + FCA integration tests (v1/14) ──────────────────────────────
@@ -483,9 +416,8 @@ fn constraint_violations_appear_in_output() {
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &findings,
-        false,
     )
     .unwrap();
 
@@ -783,9 +715,8 @@ fn waived_constraint_violations_appear_in_output() {
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &findings,
-        false,
     )
     .unwrap();
 
@@ -1162,83 +1093,13 @@ fn changed_files_include_freshness() {
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &no_findings(),
-        false,
     )
     .unwrap();
 
     let cf = result["changed_files"].as_array().unwrap();
     assert_eq!(cf[0]["_freshness"], "fresh");
-}
-
-#[test]
-fn affected_files_include_freshness() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = Db::open_unchecked("test", dir.path()).unwrap();
-
-    let src = dir.path().join("src");
-    fs::create_dir_all(&src).unwrap();
-    fs::write(src.join("hub.rs"), "fn hub() {}").unwrap();
-    fs::write(src.join("consumer.rs"), "fn consumer() {}").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    db.upsert_file("src/hub.rs", "rust", "h1", 50, true)
-        .unwrap();
-    db.upsert_file("src/consumer.rs", "rust", "h2", 30, true)
-        .unwrap();
-
-    let f_hub = db.file_by_path("src/hub.rs").unwrap().unwrap();
-    let f_con = db.file_by_path("src/consumer.rs").unwrap().unwrap();
-
-    let hub_sym_id = db
-        .insert_symbol(&sym(
-            f_hub.id,
-            "hub::process",
-            "process",
-            Some("fn process()"),
-            1,
-            20,
-            Some(5),
-        ))
-        .unwrap();
-    db.insert_symbol(&sym(
-        f_con.id,
-        "consumer::use_hub",
-        "use_hub",
-        None,
-        1,
-        10,
-        Some(2),
-    ))
-    .unwrap();
-    db.insert_ref(f_con.id, Some(hub_sym_id), None, 3, 0, "call")
-        .unwrap();
-    db.update_rollups(f_hub.id, 1, 10).unwrap();
-    db.update_rollups(f_con.id, 0, 2).unwrap();
-
-    let changed = vec!["src/hub.rs".to_string()];
-    let result = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &no_findings(),
-        false,
-    )
-    .unwrap();
-
-    let af = result["affected_files"].as_array().unwrap();
-    assert!(!af.is_empty());
-    assert_eq!(af[0]["_freshness"], "fresh");
-
-    let as_ = result["affected_symbols"].as_array().unwrap();
-    assert!(!as_.is_empty());
-    assert_eq!(as_[0]["_freshness"], "fresh");
-
-    let rr = result["recommended_reads"].as_array().unwrap();
-    assert!(!rr.is_empty());
-    assert_eq!(rr[0]["_freshness"], "fresh");
 }
 
 #[test]
@@ -1281,9 +1142,8 @@ fn freshness_reflects_actual_file_state() {
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &no_findings(),
-        false,
     )
     .unwrap();
 
@@ -1373,36 +1233,6 @@ fn build_findings_cycle_violations_counted_in_total() {
         findings.constraint_violations_total,
         findings.constraint_violations.len(),
         "total should equal the number of violations (including cycles)"
-    );
-}
-
-#[test]
-fn degraded_findings_nullify_risk_score() {
-    let (dir, db) = setup_db_with_files();
-    let changed = vec!["src/core.rs".to_string()];
-
-    let mut result = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &no_findings(),
-        false,
-    )
-    .unwrap();
-    assert!(
-        result["risk_score"].as_f64().is_some(),
-        "normal review has numeric risk_score"
-    );
-
-    if let Some(obj) = result.as_object_mut() {
-        obj.insert("findings_degraded".into(), serde_json::json!(true));
-        obj.insert("findings_error".into(), serde_json::json!("bad rules"));
-        obj.insert("risk_score".into(), serde_json::json!(null));
-    }
-    assert!(
-        result["risk_score"].is_null(),
-        "degraded review should have null risk_score"
     );
 }
 
@@ -1833,9 +1663,8 @@ scope = "src/"
         &db,
         dir.path(),
         &changed,
-        &Default::default(),
+        &changes(&db, &changed),
         &findings,
-        false,
     )
     .unwrap();
     let acked = result["acknowledged"].as_array().unwrap();
@@ -1932,5 +1761,57 @@ fn option_like_diff_spec_is_rejected_and_writes_nothing() {
     assert!(
         !target.exists(),
         "an option-like revision reached git as an option"
+    );
+}
+
+/// sutra/517 end to end: a commit that edits one method of the second of two
+/// `impl Foo` blocks reports that method, and neither block, on both the
+/// commit range and the worktree side.
+#[test]
+fn changed_symbols_scope_to_the_edited_method() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git spawn");
+        assert!(out.status.success(), "git {args:?}");
+    };
+    let before = "struct Foo;\n\nimpl Foo {\n    fn a(&self) {\n        one();\n    }\n}\n\n\
+        impl Foo {\n    fn b(&self) {\n        two();\n    }\n}\n";
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    fs::write(root.join("a.rs"), before).unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "--no-verify", "-m", "one"]);
+    fs::write(root.join("a.rs"), before.replace("two()", "three()")).unwrap();
+
+    let (_db_dir, db) = setup_db();
+    let summary = |changed: &ChangedSymbols| -> Vec<(String, String)> {
+        changed
+            .iter()
+            .map(|(_, c, _)| (c.symbol.to_string(), c.change.as_str().to_string()))
+            .collect()
+    };
+    let expected = vec![("Foo::b".to_string(), "body_changed".to_string())];
+
+    let worktree = review::resolve_diff_entries(root, "unstaged").unwrap();
+    assert_eq!(
+        summary(&review::changed_symbols(&db, root, &worktree).unwrap()),
+        expected
+    );
+
+    git(&["commit", "-q", "--no-verify", "-am", "two"]);
+    let range = review::resolve_diff_entries(root, "HEAD~1..HEAD").unwrap();
+    let changed = review::changed_symbols(&db, root, &range).unwrap();
+    assert_eq!(summary(&changed), expected);
+    let cd = changed.files[0].changes[0].callee_diff.as_ref().unwrap();
+    assert_eq!(
+        (cd.added.as_slice(), cd.removed.as_slice()),
+        (&["three".to_string()][..], &["two".to_string()][..])
     );
 }

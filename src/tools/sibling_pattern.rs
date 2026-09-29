@@ -47,7 +47,7 @@ use crate::parser::{ExtractedSymbol, ParseResult, SymbolSpan, flatten_symbols, s
 use crate::tools::firings::{PatchHasher, ReviewedPatch, count_snippet};
 use crate::tools::review::DiffScope;
 use crate::tools::symbol_diff::{
-    ChangeKind, UnmatchedSymbol, build_unmatched, classify_symbols, resolve_renames,
+    ChangeKind, ContainerScope, UnmatchedSymbol, build_unmatched, classify_symbols, resolve_renames,
 };
 
 /// The mechanism name in the firing log.
@@ -1120,7 +1120,7 @@ impl SymbolSignals {
         paths: (&str, &str),
     ) -> (Self, Vec<UnmatchedSymbol>, Vec<UnmatchedSymbol>) {
         let (old_parse, new_parse) = parses;
-        let result = classify_symbols(old_parse, new_parse, sources.0, sources.1, paths.0, paths.1);
+        let result = classify_symbols(old_parse, new_parse, sources, paths, ContainerScope::Whole);
         let changed: HashSet<&str> = result.changes.iter().map(|c| c.symbol.as_str()).collect();
         let cosmetic: HashSet<&str> = result
             .changes

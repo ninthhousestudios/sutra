@@ -1,6 +1,7 @@
 pub mod advisory;
 pub mod calls;
 pub mod change_signals;
+pub mod changed_symbols;
 pub mod check;
 pub mod cochange;
 pub mod commit_manifest;

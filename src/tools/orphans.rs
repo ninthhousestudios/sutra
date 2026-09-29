@@ -34,7 +34,9 @@ use crate::tools::advisory::{self, adapter_for, dirty_outside_diff, index_mismat
 use crate::tools::firings::ReviewedPatch;
 use crate::tools::review::DiffScope;
 use crate::tools::sibling_pattern::read_sides;
-use crate::tools::symbol_diff::{build_unmatched, classify_symbols, resolve_renames};
+use crate::tools::symbol_diff::{
+    ContainerScope, build_unmatched, classify_symbols, resolve_renames,
+};
 
 /// The mechanism name in the firing log.
 pub const MECHANISM: &str = "orphan";
@@ -229,7 +231,8 @@ pub fn analyze(
         let new = parse(new_src.as_deref(), new_path);
         match (&old_src, &new_src, &old, &new) {
             (Some(o), Some(n), Some(op), Some(np)) => {
-                let result = classify_symbols(op, np, o, n, old_path, new_path);
+                let result =
+                    classify_symbols(op, np, (o, n), (old_path, new_path), ContainerScope::Whole);
                 unmatched_old.extend(result.unmatched_old);
                 unmatched_new.extend(result.unmatched_new);
             }

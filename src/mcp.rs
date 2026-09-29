@@ -981,9 +981,11 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Structural review compositor. Diffs current branch (or staged/unstaged), \
-        identifies changed files and symbols, computes transitive impact, calculates a \
-        0.0–1.0 risk score with breakdown, and ranks recommended reads. \
+        description = "Structural review of a diff. Reports what changed per symbol \
+        (added / deleted / signature_changed / body_changed, with callee diffs), constraint \
+        violations, and the write-side advisories: dup_exists (added code that already \
+        exists), sibling_patterns (a removed idiom that survives elsewhere), orphans (new \
+        symbols nothing uses) and behavioral_coupling (co-change partners with no static edge). \
         diff: \"branch\" (default, against main merge-base), \"staged\", \"unstaged\", \
         or a commit spec — \"abc123..def456\" for a range, \"abc123\" for a single commit."
     )]
@@ -1005,7 +1007,6 @@ impl SutraServer {
             ctx.workspace_root(),
             args.diff.as_deref(),
             Some(&dd),
-            args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
