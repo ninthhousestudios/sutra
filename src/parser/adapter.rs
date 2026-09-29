@@ -3,8 +3,6 @@ use std::time::Duration;
 
 use tree_sitter::{Language, Parser, Tree};
 
-use crate::conventions::{EffectPattern, SymbolAttrs, extract_cross_language_attrs};
-use crate::db::SymbolRow;
 use crate::error::{Result, SutraError};
 
 use super::ParseResult;
@@ -109,46 +107,6 @@ impl ParserPool {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct ToolchainPair {
-    pub antecedent: &'static str,
-    pub consequent: &'static str,
-}
-
-pub trait FcaAttributeSource: Send + Sync {
-    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>;
-    fn effect_patterns(&self) -> &[EffectPattern] {
-        &[]
-    }
-    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
-        &[]
-    }
-}
-
-fn extract_attrs_with_language_bools(sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-    let mut sa = extract_cross_language_attrs(sym, file_path)?;
-    if let Some(ref la_json) = sym.language_attrs {
-        match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
-            Ok(map) => {
-                for (key, val) in &map {
-                    if val.as_bool() == Some(true) {
-                        sa.attributes.push(key.to_owned());
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    symbol = %sym.qualified_name,
-                    file = %file_path,
-                    error = %e,
-                    "malformed language_attrs JSON, skipping language-specific attributes"
-                );
-            }
-        }
-    }
-    Some(sa)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleBoundaryStrength {
     Strong,
@@ -234,9 +192,6 @@ pub trait LanguageAdapter: Send + Sync {
     /// by overriding rather than by accident.
     fn is_test_path(&self, _path: &str) -> bool {
         false
-    }
-    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
-        None
     }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Weak
@@ -369,67 +324,8 @@ impl LanguageAdapter for RustAdapter {
     fn is_test_path(&self, path: &str) -> bool {
         super::rust::is_test_path(path)
     }
-    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
-        Some(self)
-    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Strong
-    }
-}
-
-const RUST_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
-    ToolchainPair {
-        antecedent: "kind:function",
-        consequent: "naming:snake_case",
-    },
-    ToolchainPair {
-        antecedent: "kind:const",
-        consequent: "naming:SCREAMING",
-    },
-    ToolchainPair {
-        antecedent: "kind:struct",
-        consequent: "naming:CamelCase",
-    },
-    ToolchainPair {
-        antecedent: "kind:enum",
-        consequent: "naming:CamelCase",
-    },
-    ToolchainPair {
-        antecedent: "kind:trait",
-        consequent: "naming:CamelCase",
-    },
-    ToolchainPair {
-        antecedent: "kind:type_alias",
-        consequent: "naming:CamelCase",
-    },
-];
-
-const RUST_EFFECT_PATTERNS: &[EffectPattern] = &[
-    EffectPattern {
-        attr_name: "effect:fs",
-        callee_prefixes: &["std::fs::", "tokio::fs::"],
-    },
-    EffectPattern {
-        attr_name: "effect:net",
-        callee_prefixes: &["std::net::", "tokio::net::", "hyper::", "reqwest::"],
-    },
-    EffectPattern {
-        attr_name: "effect:db",
-        callee_prefixes: &["sqlx::", "diesel::", "rusqlite::"],
-    },
-];
-
-impl FcaAttributeSource for RustAdapter {
-    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_attrs_with_language_bools(sym, file_path)
-    }
-
-    fn effect_patterns(&self) -> &[EffectPattern] {
-        RUST_EFFECT_PATTERNS
-    }
-
-    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
-        RUST_TOOLCHAIN_PAIRS
     }
 }
 
@@ -451,59 +347,8 @@ impl LanguageAdapter for DartAdapter {
     fn is_test_path(&self, path: &str) -> bool {
         super::dart::is_test_path(path)
     }
-    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
-        Some(self)
-    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Moderate
-    }
-}
-
-const DART_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
-    ToolchainPair {
-        antecedent: "kind:class",
-        consequent: "naming:CamelCase",
-    },
-    ToolchainPair {
-        antecedent: "kind:mixin",
-        consequent: "naming:CamelCase",
-    },
-    ToolchainPair {
-        antecedent: "kind:enum",
-        consequent: "naming:CamelCase",
-    },
-    ToolchainPair {
-        antecedent: "kind:type_alias",
-        consequent: "naming:CamelCase",
-    },
-];
-
-const DART_EFFECT_PATTERNS: &[EffectPattern] = &[
-    EffectPattern {
-        attr_name: "effect:fs",
-        callee_prefixes: &["dart:io::File", "dart:io::Directory", "dart:io::FileSystem"],
-    },
-    EffectPattern {
-        attr_name: "effect:net",
-        callee_prefixes: &["http::", "dio::", "dart:io::HttpClient", "dart:io::Socket"],
-    },
-    EffectPattern {
-        attr_name: "effect:db",
-        callee_prefixes: &["sqflite::", "drift::", "isar::", "hive::"],
-    },
-];
-
-impl FcaAttributeSource for DartAdapter {
-    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_attrs_with_language_bools(sym, file_path)
-    }
-
-    fn effect_patterns(&self) -> &[EffectPattern] {
-        DART_EFFECT_PATTERNS
-    }
-
-    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
-        DART_TOOLCHAIN_PAIRS
     }
 }
 
@@ -525,40 +370,8 @@ impl LanguageAdapter for CAdapter {
     fn is_test_path(&self, path: &str) -> bool {
         super::c::is_test_path(path)
     }
-    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
-        Some(self)
-    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Weak
-    }
-}
-
-const C_EFFECT_PATTERNS: &[EffectPattern] = &[
-    EffectPattern {
-        attr_name: "effect:heap",
-        callee_prefixes: &["malloc", "calloc", "realloc", "free"],
-    },
-    EffectPattern {
-        attr_name: "effect:fs",
-        callee_prefixes: &["fopen", "fclose", "fread", "fwrite", "fprintf"],
-    },
-    EffectPattern {
-        attr_name: "effect:net",
-        callee_prefixes: &["socket", "connect", "send", "recv"],
-    },
-    EffectPattern {
-        attr_name: "effect:io",
-        callee_prefixes: &["printf", "puts", "fputs"],
-    },
-];
-
-impl FcaAttributeSource for CAdapter {
-    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_attrs_with_language_bools(sym, file_path)
-    }
-
-    fn effect_patterns(&self) -> &[EffectPattern] {
-        C_EFFECT_PATTERNS
     }
 }
 
@@ -583,51 +396,8 @@ impl LanguageAdapter for PythonAdapter {
     fn is_test_path(&self, path: &str) -> bool {
         super::python::is_test_path(path)
     }
-    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
-        Some(self)
-    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Weak
-    }
-}
-
-const PYTHON_EFFECT_PATTERNS: &[EffectPattern] = &[
-    EffectPattern {
-        attr_name: "effect:fs",
-        callee_prefixes: &[
-            "open",
-            "os.path",
-            "os.mkdir",
-            "os.remove",
-            "shutil",
-            "pathlib",
-        ],
-    },
-    EffectPattern {
-        attr_name: "effect:net",
-        callee_prefixes: &["requests", "urllib", "http.client", "socket", "aiohttp"],
-    },
-    EffectPattern {
-        attr_name: "effect:db",
-        callee_prefixes: &["sqlite3", "psycopg", "sqlalchemy", "pymongo", "redis"],
-    },
-    EffectPattern {
-        attr_name: "effect:io",
-        callee_prefixes: &["print", "input", "sys.stdout", "sys.stderr", "logging"],
-    },
-    EffectPattern {
-        attr_name: "effect:process",
-        callee_prefixes: &["subprocess", "os.system", "os.exec", "os.spawn"],
-    },
-];
-
-impl FcaAttributeSource for PythonAdapter {
-    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_attrs_with_language_bools(sym, file_path)
-    }
-
-    fn effect_patterns(&self) -> &[EffectPattern] {
-        PYTHON_EFFECT_PATTERNS
     }
 }
 
@@ -649,57 +419,8 @@ impl LanguageAdapter for JsAdapter {
     fn is_test_path(&self, path: &str) -> bool {
         super::javascript::is_test_path(path)
     }
-    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
-        Some(self)
-    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Moderate
-    }
-}
-
-const JS_EFFECT_PATTERNS: &[EffectPattern] = &[
-    EffectPattern {
-        attr_name: "effect:dom",
-        callee_prefixes: &["document.", "window.", "globalThis."],
-    },
-    EffectPattern {
-        attr_name: "effect:net",
-        callee_prefixes: &["fetch", "XMLHttpRequest", "axios."],
-    },
-    EffectPattern {
-        attr_name: "effect:fs",
-        callee_prefixes: &["fs.", "readFile", "writeFile"],
-    },
-    EffectPattern {
-        attr_name: "effect:process",
-        callee_prefixes: &["process.exit", "process.env"],
-    },
-    EffectPattern {
-        attr_name: "effect:console",
-        callee_prefixes: &["console.log", "console.error"],
-    },
-    EffectPattern {
-        attr_name: "effect:async",
-        callee_prefixes: &["Promise", "then"],
-    },
-];
-
-const JS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[ToolchainPair {
-    antecedent: "async",
-    consequent: "await",
-}];
-
-impl FcaAttributeSource for JsAdapter {
-    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_attrs_with_language_bools(sym, file_path)
-    }
-
-    fn effect_patterns(&self) -> &[EffectPattern] {
-        JS_EFFECT_PATTERNS
-    }
-
-    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
-        JS_TOOLCHAIN_PAIRS
     }
 }
 
@@ -724,30 +445,8 @@ impl LanguageAdapter for TsAdapter {
         // extensions are one vocabulary across both languages.
         super::javascript::is_test_path(path)
     }
-    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
-        Some(self)
-    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Moderate
-    }
-}
-
-const TS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[ToolchainPair {
-    antecedent: "async",
-    consequent: "await",
-}];
-
-impl FcaAttributeSource for TsAdapter {
-    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_attrs_with_language_bools(sym, file_path)
-    }
-
-    fn effect_patterns(&self) -> &[EffectPattern] {
-        JS_EFFECT_PATTERNS
-    }
-
-    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
-        TS_TOOLCHAIN_PAIRS
     }
 }
 
@@ -864,67 +563,6 @@ mod tests {
         assert!(exts.contains(&"dart"));
     }
 
-    #[test]
-    fn fca_source_capability() {
-        let rust = RustAdapter;
-        assert!(rust.as_fca_source().is_some());
-
-        let dart = DartAdapter;
-        assert!(dart.as_fca_source().is_some());
-
-        let test = TestAdapter;
-        assert!(test.as_fca_source().is_none());
-    }
-
-    fn make_test_symbol_row(
-        kind: &str,
-        visibility: Option<&str>,
-        signature: Option<&str>,
-        language_attrs: Option<&str>,
-    ) -> SymbolRow {
-        SymbolRow {
-            id: 1,
-            file_id: 1,
-            qualified_name: "mod::my_func".into(),
-            short_name: "my_func".into(),
-            kind: kind.into(),
-            signature: signature.map(Into::into),
-            signature_hash: None,
-            structural_hash: None,
-            visibility: visibility.map(Into::into),
-            start_line: 1,
-            start_col: 0,
-            end_line: 10,
-            end_col: 0,
-            parent_symbol_id: None,
-            docstring: None,
-            pagerank: None,
-            cyclomatic: None,
-            cognitive: Some(3),
-            flags: 0,
-            language_attrs: language_attrs.map(Into::into),
-        }
-    }
-
-    #[test]
-    fn rust_fca_source_extracts_from_language_attrs() {
-        let rust = RustAdapter;
-        let fca = rust.as_fca_source().unwrap();
-        let sym = make_test_symbol_row(
-            "function",
-            Some("pub"),
-            Some("fn my_func() -> Result<()>"),
-            Some(r#"{"returns_result":true,"is_async":true}"#),
-        );
-        let attrs = fca.extract_attributes(&sym, "src/tools/foo.rs").unwrap();
-        assert!(attrs.attributes.contains(&"kind:function".to_string()));
-        assert!(attrs.attributes.contains(&"vis:pub".to_string()));
-        assert!(attrs.attributes.contains(&"has_sig".to_string()));
-        assert!(attrs.attributes.contains(&"complexity:low".to_string()));
-        assert!(attrs.attributes.contains(&"returns_result".to_string()));
-        assert!(attrs.attributes.contains(&"is_async".to_string()));
-    }
-
     /// `parse_with` flags every import in a test-path file, which is what feeds
     /// `db::production_import_edges` for the dep-shaped constraint kinds
     /// (sutra/292, extended to these languages in sutra/295).
@@ -971,33 +609,6 @@ mod tests {
                 in_prod.imports
             );
         }
-    }
-
-    #[test]
-    fn rust_fca_source_works_without_language_attrs() {
-        let rust = RustAdapter;
-        let fca = rust.as_fca_source().unwrap();
-        let sym = make_test_symbol_row("function", Some("pub"), Some("fn foo()"), None);
-        let attrs = fca.extract_attributes(&sym, "src/foo.rs").unwrap();
-        assert!(attrs.attributes.contains(&"kind:function".to_string()));
-        assert!(!attrs.attributes.contains(&"returns_result".to_string()));
-    }
-
-    #[test]
-    fn dart_fca_source_extracts_language_attrs() {
-        let dart = DartAdapter;
-        let fca = dart.as_fca_source().unwrap();
-        let mut sym = make_test_symbol_row(
-            "function",
-            Some("public"),
-            Some("Future<void> fetch()"),
-            None,
-        );
-        sym.language_attrs = Some(r#"{"is_async":true,"returns_future":true}"#.into());
-        let attrs = fca.extract_attributes(&sym, "lib/api.dart").unwrap();
-        assert!(attrs.attributes.contains(&"is_async".to_string()));
-        assert!(attrs.attributes.contains(&"returns_future".to_string()));
-        assert!(attrs.attributes.contains(&"kind:function".to_string()));
     }
 
     #[test]
@@ -1068,90 +679,5 @@ mod tests {
         assert_eq!(mults.get("javascript"), Some(&1.5));
         assert_eq!(mults.get("typescript"), Some(&1.5));
         assert_eq!(mults.len(), 6);
-    }
-
-    #[test]
-    fn rust_adapter_has_effect_patterns() {
-        let rust = RustAdapter;
-        let source = rust.as_fca_source().unwrap();
-        let patterns = source.effect_patterns();
-        assert!(!patterns.is_empty());
-        let names: Vec<_> = patterns.iter().map(|p| p.attr_name).collect();
-        assert!(names.contains(&"effect:fs"));
-        assert!(names.contains(&"effect:net"));
-        assert!(names.contains(&"effect:db"));
-    }
-
-    #[test]
-    fn dart_adapter_has_effect_patterns() {
-        let dart = DartAdapter;
-        let source = dart.as_fca_source().unwrap();
-        let patterns = source.effect_patterns();
-        assert!(!patterns.is_empty());
-        let names: Vec<_> = patterns.iter().map(|p| p.attr_name).collect();
-        assert!(names.contains(&"effect:fs"));
-        assert!(names.contains(&"effect:net"));
-        assert!(names.contains(&"effect:db"));
-    }
-
-    #[test]
-    fn js_extract_attributes_surfaces_language_bools() {
-        let js = JsAdapter;
-        let fca = js.as_fca_source().unwrap();
-        let sym = make_test_symbol_row(
-            "function",
-            Some("export"),
-            Some("async function fetchData()"),
-            Some(r#"{"async":true,"await":true}"#),
-        );
-        let attrs = fca.extract_attributes(&sym, "src/api.js").unwrap();
-        assert!(attrs.attributes.contains(&"async".to_string()));
-        assert!(attrs.attributes.contains(&"await".to_string()));
-        assert!(attrs.attributes.contains(&"vis:pub".to_string()));
-    }
-
-    #[test]
-    fn ts_extract_attributes_surfaces_language_bools() {
-        let ts = TsAdapter;
-        let fca = ts.as_fca_source().unwrap();
-        let sym = make_test_symbol_row(
-            "method",
-            None,
-            Some("async getData(): Promise<Data>"),
-            Some(r#"{"async":true,"readonly":true}"#),
-        );
-        let attrs = fca.extract_attributes(&sym, "src/service.ts").unwrap();
-        assert!(attrs.attributes.contains(&"async".to_string()));
-        assert!(attrs.attributes.contains(&"readonly".to_string()));
-    }
-
-    #[test]
-    fn js_async_await_toolchain_pair_matches() {
-        let js = JsAdapter;
-        let fca = js.as_fca_source().unwrap();
-        let pairs = fca.toolchain_enforced_pairs();
-        let async_await = pairs
-            .iter()
-            .find(|p| p.antecedent == "async")
-            .expect("async→await pair should exist");
-        assert_eq!(async_await.consequent, "await");
-    }
-
-    #[test]
-    fn export_visibility_maps_to_vis_pub() {
-        let js = JsAdapter;
-        let fca = js.as_fca_source().unwrap();
-        let sym = make_test_symbol_row("function", Some("export"), Some("function init()"), None);
-        let attrs = fca.extract_attributes(&sym, "src/app.js").unwrap();
-        assert!(attrs.attributes.contains(&"vis:pub".to_string()));
-
-        let sym_default = make_test_symbol_row(
-            "function",
-            Some("export default"),
-            Some("function main()"),
-            None,
-        );
-        let attrs_default = fca.extract_attributes(&sym_default, "src/main.js").unwrap();
-        assert!(attrs_default.attributes.contains(&"vis:pub".to_string()));
     }
 }

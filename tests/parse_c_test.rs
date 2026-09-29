@@ -377,16 +377,3 @@ fn c_adapter_registered() {
     assert!(adapter.extensions().contains(&"c"), "should handle .c");
     assert!(adapter.extensions().contains(&"h"), "should handle .h");
 }
-
-#[test]
-fn effect_patterns_present() {
-    let registry = default_registry();
-    let adapter = registry.adapter_for_language("c").unwrap();
-    let fca = adapter.as_fca_source().expect("C should have FCA source");
-    let patterns = fca.effect_patterns();
-    let names: Vec<_> = patterns.iter().map(|p| p.attr_name).collect();
-    assert!(names.contains(&"effect:heap"), "missing heap: {names:?}");
-    assert!(names.contains(&"effect:fs"), "missing fs: {names:?}");
-    assert!(names.contains(&"effect:io"), "missing io: {names:?}");
-    assert!(names.contains(&"effect:net"), "missing net: {names:?}");
-}

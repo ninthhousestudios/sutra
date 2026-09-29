@@ -6,7 +6,6 @@
 
 mod components;
 mod constraints;
-mod conventions;
 pub mod entity_changes;
 pub mod firings;
 mod graph;
@@ -22,7 +21,6 @@ pub use constraints::{
 pub(crate) use constraints::{
     accepted_sync_marker_from_conn, active_ratchets_from_conn, constraint_waivers_from_conn,
 };
-pub use conventions::ConventionRow;
 pub(crate) use graph::file_importers_from_conn;
 pub use similarity::{CorpusFunction, HrrSymbolRow, PatternFamily, SymbolSummary};
 
@@ -155,11 +153,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "snapshots",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "conventions",
         partition: TablePartition::Ephemeral,
         is_virtual: false,
     },

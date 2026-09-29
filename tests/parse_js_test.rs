@@ -1,9 +1,7 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 use sutra::config::Config;
-use sutra::conventions::{enrich_all_effects, extract_attrs_for_symbol};
 use sutra::db::Db;
 use sutra::parser::adapter::default_registry;
 use sutra::parser::{SymbolKind, flatten_symbols, parse_file};
@@ -349,12 +347,6 @@ fn js_adapter_registered() {
     assert!(adapter.extensions().contains(&"jsx"));
     assert!(adapter.extensions().contains(&"mjs"));
     assert!(adapter.extensions().contains(&"cjs"));
-
-    let fca = adapter.as_fca_source().expect("JS should have FCA source");
-    let effect_names: Vec<_> = fca.effect_patterns().iter().map(|p| p.attr_name).collect();
-    assert!(effect_names.contains(&"effect:dom"));
-    assert!(effect_names.contains(&"effect:net"));
-    assert!(effect_names.contains(&"effect:fs"));
 }
 
 // ---------------------------------------------------------------------------
@@ -456,68 +448,6 @@ fn js_cross_file_import_resolution() {
 // ---------------------------------------------------------------------------
 // Effect detection end-to-end
 // ---------------------------------------------------------------------------
-
-#[test]
-fn js_effect_detection() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("effects.js"),
-        r#"
-function readDom() {
-  const el = document.getElementById('app');
-  return el.innerHTML;
-}
-
-async function fetchApi(url) {
-  const res = await fetch(url);
-  return res.json();
-}
-
-function writeFile(path, data) {
-  fs.writeFileSync(path, data);
-}
-"#,
-    )
-    .unwrap();
-
-    let db_dir = tempfile::tempdir().unwrap();
-    let ws = make_js_entry("js-effects", dir.path().to_path_buf());
-    let config = make_config(db_dir.path());
-    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
-    let cancel = AtomicBool::new(false);
-    let registry = default_registry();
-
-    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
-
-    let file = db
-        .file_by_path("effects.js")
-        .unwrap()
-        .expect("effects.js should be indexed");
-    let syms = db.find_symbols_by_file(file.id).unwrap();
-    let refs = db.find_refs_in_file(file.id).unwrap();
-    let adapter = registry.adapter_for_language("javascript").unwrap();
-    let fca_source = adapter.as_fca_source().unwrap();
-    let callee_cache = HashMap::new();
-
-    for (fn_name, expected_effect) in [
-        ("readDom", "effect:dom"),
-        ("fetchApi", "effect:net"),
-        ("writeFile", "effect:fs"),
-    ] {
-        let sym = syms
-            .iter()
-            .find(|s| &*s.short_name == fn_name)
-            .unwrap_or_else(|| panic!("missing symbol {fn_name}"));
-        let mut attrs = extract_attrs_for_symbol(sym, "effects.js", "javascript", &registry)
-            .unwrap_or_else(|| panic!("no attrs for {fn_name}"));
-        enrich_all_effects(&mut attrs, sym, &refs, &callee_cache, fca_source, None);
-        assert!(
-            attrs.attributes.contains(&expected_effect.to_string()),
-            "{fn_name} should have {expected_effect}, got: {:?}",
-            attrs.attributes
-        );
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Test detection (FLAG_TEST = 0x01)

@@ -352,11 +352,6 @@ fn ts_adapter_registered() {
     assert!(adapter.extensions().contains(&"tsx"));
     assert!(adapter.extensions().contains(&"mts"));
     assert!(adapter.extensions().contains(&"cts"));
-
-    let fca = adapter.as_fca_source().expect("TS should have FCA source");
-    let effect_names: Vec<_> = fca.effect_patterns().iter().map(|p| p.attr_name).collect();
-    assert!(effect_names.contains(&"effect:dom"));
-    assert!(effect_names.contains(&"effect:net"));
 }
 
 // ---------------------------------------------------------------------------

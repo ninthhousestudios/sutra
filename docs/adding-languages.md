@@ -13,7 +13,6 @@ language_id()           → &str              // "rust", "dart"
 extensions()            → &[&str]           // &[".rs"], &[".dart"]
 grammar()               → tree_sitter::Language
 parse(ctx)              → ParseResult       // symbols, refs, imports
-as_fca_source()         → Option<&dyn FcaAttributeSource>
 module_boundary_hints() → ModuleBoundaryStrength
 ```
 
@@ -29,7 +28,7 @@ declarations must be indexed. Map immutable bindings (`const`, `final`,
 `SymbolKind::Static`. Without this, `sutra_lookup` can't find module-level
 configuration, constants, or global state.
 
-Everything above Layer 0 — conventions (FCA), constraints (DD), similarity
+Everything above Layer 0 — constraints (DD), similarity
 (HRR), components, review — is language-agnostic.
 A new language needs three things: a parser module, an adapter registration
 in `default_registry()`, and an **import resolver** (see below).
@@ -63,19 +62,6 @@ The pattern:
 This was missed for both Rust and Dart initially (sutra/119) — discovered
 when `sutra_deps` returned zero edges despite imports being parsed
 correctly. The parser alone is not enough; the resolver is load-bearing.
-
-### Optional: FcaAttributeSource
-
-Languages that implement `FcaAttributeSource` get richer convention discovery:
-
-```
-extract_attributes(sym, file_path) → Option<SymbolAttrs>
-effect_patterns()                  → &[EffectPattern]
-```
-
-Without it, FCA uses only cross-language attributes (kind, visibility,
-has_doc, has_sig, complexity bucket, naming convention, directory). This is
-functional but shallower — fewer language-specific patterns detected.
 
 ### Complexity metrics
 
@@ -158,34 +144,6 @@ Same heuristic as Rust (walk preceding siblings for comment nodes).
   `do_statement` (not `switch_statement`, matching Rust's `match` treatment)
 - Logical operators: `&&`, `||` in binary_expression
 
-### FCA attributes
-
-Implement `FcaAttributeSource` for `CAdapter`:
-
-| Attribute | Source |
-|---|---|
-| `returns_ptr` | Return type contains `*` |
-| `takes_ptr` | Any parameter contains `*` |
-| `is_static` | `static` storage class |
-| `is_inline` | `inline` specifier |
-| `is_variadic` | `...` in parameter list |
-| `has_const` | `const` in signature |
-| `returns_void` | Return type is `void` |
-| `has_struct_param` | Parameter is a struct type |
-
-Effect patterns:
-- `malloc`, `calloc`, `realloc`, `free` → `effect:heap`
-- `fopen`, `fclose`, `fread`, `fwrite`, `fprintf` → `effect:fs`
-- `socket`, `connect`, `send`, `recv` → `effect:net`
-- `printf`, `puts`, `fputs` → `effect:io`
-
-**Boundary matching:** C effect patterns use bare unqualified names, unlike
-Rust/Dart patterns which include `::` namespace prefixes. The shared effect
-matcher (`enrich_with_effects` in `src/conventions/attributes.rs`) matches
-at `::` boundaries or exact match — so `"free"` matches `free` but not
-`free_list`. Languages without namespacing must rely on this; don't add
-patterns that are common prefixes of unrelated identifiers.
-
 ### Module boundary strength
 
 `Weak` — C has no module system. Files are compilation units with no
@@ -199,9 +157,8 @@ language-level encapsulation beyond `static`.
 | Parser (symbols, refs, signatures, docstrings) | 2 |
 | Import resolution (relative + project-root) | 1 |
 | Complexity branches | 0.5 |
-| FCA attributes + effect patterns | 1 |
 | Flags (test/FFI heuristics) | 0.5 |
-| **Total** | **5** |
+| **Total** | **4** |
 
 ### Risks
 
@@ -303,34 +260,6 @@ it's a string literal. Well-defined convention, easy to extract.
   `dictionary_comprehension`, `set_comprehension` — increment cognitive
   (they add mental load) but don't increment nesting
 
-### FCA attributes
-
-Implement `FcaAttributeSource` for `PythonAdapter`:
-
-| Attribute | Source |
-|---|---|
-| `is_async` | `async` keyword on function_definition |
-| `has_decorator` | Has decorated_definition parent |
-| `decorator:X` | Specific decorator name (e.g. `decorator:staticmethod`) |
-| `is_classmethod` | `@classmethod` decorator |
-| `is_staticmethod` | `@staticmethod` decorator |
-| `is_property` | `@property` decorator |
-| `has_type_hints` | Any parameter or return has type annotation |
-| `returns_none` | Return type is `None` or no return statement |
-| `is_generator` | Contains `yield` statement |
-| `is_contextmanager` | `@contextmanager` decorator |
-| `has_dataclass` | Class with `@dataclass` decorator |
-
-Decorators are an especially rich FCA signal — Python projects lean on
-them heavily and they encode strong conventions.
-
-Effect patterns:
-- `open`, `Path().read_text` → `effect:fs`
-- `requests.*`, `urllib.*`, `aiohttp.*` → `effect:net`
-- `cursor.execute`, `session.query` → `effect:db`
-- `print`, `logging.*` → `effect:io`
-- `subprocess.*`, `os.system` → `effect:process`
-
 ### Module boundary strength
 
 `Weak` — Python has real modules but no visibility enforcement beyond the
@@ -344,9 +273,8 @@ advisory.
 | Parser (symbols, refs, signatures, docstrings) | 2.5 |
 | Import resolution (relative + absolute project) | 1 |
 | Complexity branches | 0.5 |
-| FCA attributes + decorator analysis | 1.5 |
 | Flags (pytest/unittest detection) | 0.5 |
-| **Total** | **6** |
+| **Total** | **4.5** |
 
 ### Risks
 

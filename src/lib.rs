@@ -2,7 +2,6 @@ pub mod c_imports;
 pub mod components;
 pub mod config;
 pub mod constraints;
-pub mod conventions;
 pub mod dart_packages;
 pub mod db;
 pub mod diagnostics;

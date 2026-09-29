@@ -570,6 +570,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0093_recompute_hrr_sibling_bag.sql"),
         false,
     ),
+    // Drop the FCA conventions and its input-hash cache (sutra/518): the last
+    // reader, the sutra_conventions tool, is gone. ephemeral_only: reindex
+    // recreates both through 0005/0040, so the drop must replay after them.
+    (
+        "0094_drop_fca_conventions",
+        include_str!("../../migrations/0094_drop_fca_conventions.sql"),
+        true,
+    ),
 ];
 
 impl Db {

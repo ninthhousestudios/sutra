@@ -1,3 +1,4 @@
+
 [[waiver]]
 constraint = "no-clone-driven-dev"
 file = "src/bin/guard.rs"
@@ -185,76 +186,6 @@ constraint = "no-clone-driven-dev"
 file = "src/constraints/worker.rs"
 symbol = "run_worker"
 rationale = "Rc<RefCell<T>> / differential-dataflow Collection clone — cheap shared-ownership for dataflow callbacks"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/attributes.rs"
-symbol = "enrich_all_effects"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/bitset.rs"
-symbol = "BitSet::intersect"
-rationale = "pure functional return — clone self to produce modified copy"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/context.rs"
-symbol = "FormalContext::all_concepts"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/context.rs"
-symbol = "FormalContext::count_with_attrs"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/context.rs"
-symbol = "FormalContext::exemplars_for"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/engine.rs"
-symbol = "FcaEngine::build_context"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/engine.rs"
-symbol = "FcaEngine::check_inverse"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/engine.rs"
-symbol = "FcaEngine::update_incremental"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/engine.rs"
-symbol = "detect_deviations"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/conventions/pipeline.rs"
-symbol = "rebuild"
-rationale = "owned struct field construction from borrowed data"
 by = "clone-audit-sutra/251"
 
 [[waiver]]
@@ -588,13 +519,6 @@ by = "clone-audit-sutra/251"
 
 [[waiver]]
 constraint = "no-clone-driven-dev"
-file = "src/tools/change_signals.rs"
-symbol = "gather"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
 file = "src/tools/explore.rs"
 symbol = "collect_fan_out"
 rationale = "owned struct field construction from borrowed data"
@@ -630,13 +554,6 @@ by = "clone-audit-sutra/251"
 
 [[waiver]]
 constraint = "no-clone-driven-dev"
-file = "src/tools/pr_risk.rs"
-symbol = "compute"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
 file = "src/tools/review.rs"
 symbol = "build_findings"
 rationale = "owned struct field construction from borrowed data"
@@ -654,20 +571,6 @@ constraint = "no-clone-driven-dev"
 file = "src/tools/symbol_diff.rs"
 symbol = "callees_in_range"
 rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/tools/trace.rs"
-symbol = "dfs_callees"
-rationale = "DFS path snapshot — recording stack state at branch point"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/tools/trace.rs"
-symbol = "dfs_callers"
-rationale = "DFS path snapshot — recording stack state at branch point"
 by = "clone-audit-sutra/251"
 
 [[waiver]]

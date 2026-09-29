@@ -816,51 +816,6 @@ fn test_migration_hash_mismatch_errors() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn convention_upsert_and_retrieve() {
-    let (_dir, db) = setup_db();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95, None)
-        .unwrap();
-    let rows = db.all_conventions().unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, "abc123");
-    assert_eq!(rows[0].antecedent, "kind:function");
-    assert_eq!(rows[0].consequent, "has_sig");
-    assert_eq!(rows[0].support, 42);
-    assert!((rows[0].confidence - 0.95).abs() < 1e-9);
-}
-
-#[test]
-fn convention_upsert_updates_existing() {
-    let (_dir, db) = setup_db();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95, None)
-        .unwrap();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 50, 0.97, None)
-        .unwrap();
-    let rows = db.all_conventions().unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].support, 50);
-    assert!((rows[0].confidence - 0.97).abs() < 1e-9);
-}
-
-#[test]
-fn convention_delete_stale() {
-    let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
-        .unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
-        .unwrap();
-    db.upsert_convention("ccc", "e", "f", 30, 0.99, None)
-        .unwrap();
-    let deleted = db.delete_stale_conventions(&["aaa", "ccc"]).unwrap();
-    assert_eq!(deleted, 1);
-    let rows = db.all_conventions().unwrap();
-    assert_eq!(rows.len(), 2);
-    let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-    assert!(ids.contains(&"aaa"));
-    assert!(ids.contains(&"ccc"));
-}
-
-#[test]
 fn test_table_registry_covers_all_tables() {
     let names: Vec<&str> = TABLE_REGISTRY.iter().map(|t| t.name).collect();
     assert!(names.contains(&"files"));
@@ -869,7 +824,6 @@ fn test_table_registry_covers_all_tables() {
     assert!(names.contains(&"refs"));
     assert!(names.contains(&"imports"));
     assert!(names.contains(&"snapshots"));
-    assert!(names.contains(&"conventions"));
 
     for meta in TABLE_REGISTRY {
         assert!(
@@ -885,36 +839,24 @@ fn test_reindex_drops_ephemeral_tables() {
 
     let file_id = seed_file(&db, "src/main.rs");
     seed_symbol(&db, file_id, "main", "main", "function");
-    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9, None)
-        .unwrap();
 
     let files = db.all_files().unwrap();
     assert!(!files.is_empty());
-    let conventions = db.all_conventions().unwrap();
-    assert!(!conventions.is_empty());
 
     let dropped = db.reindex().unwrap();
     assert!(dropped.contains(&"files"));
     assert!(dropped.contains(&"symbols"));
     assert!(dropped.contains(&"symbols_fts"));
-    assert!(dropped.contains(&"conventions"));
 
     let files = db.all_files().unwrap();
     assert!(
         files.is_empty(),
         "ephemeral files table should be empty after reindex"
     );
-    let conventions = db.all_conventions().unwrap();
-    assert!(
-        conventions.is_empty(),
-        "ephemeral conventions table should be empty after reindex"
-    );
 
     let file_id = seed_file(&db, "src/lib.rs");
     assert!(file_id > 0, "should be able to insert after reindex");
     seed_symbol(&db, file_id, "lib_fn", "lib_fn", "function");
-    db.upsert_convention("conv2", "kind:struct", "has_doc", 5, 0.8, None)
-        .unwrap();
 }
 
 // --- Constraint waiver tests ---

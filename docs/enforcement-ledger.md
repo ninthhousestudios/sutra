@@ -10,12 +10,12 @@ at checkpoint:sutra/175 (2026-06-16).
 
 | Constraint | From | To | Provenance | Status |
 |---|---|---|---|---|
-| guard-no-conventions | src/guard.rs | src/conventions/* | ADR-0001 | live |
+| guard-no-conventions | src/guard.rs | src/conventions/* | ADR-0001 | obsoleted (sutra/518: src/conventions deleted) |
 | guard-no-similarity | src/guard.rs | src/similarity/* | initial | live |
 | guard-no-health | src/guard.rs | src/health/* | initial | live |
 | guard-no-pipeline | src/guard.rs | src/pipeline.rs | initial | live |
 | guard-no-tools | src/guard.rs | src/tools/* | initial | live |
-| guard-bin-no-conventions | src/bin/guard.rs | src/conventions/* | initial | live |
+| guard-bin-no-conventions | src/bin/guard.rs | src/conventions/* | initial | obsoleted (sutra/518: src/conventions deleted) |
 | guard-bin-no-similarity | src/bin/guard.rs | src/similarity/* | initial | live |
 | guard-bin-no-health | src/bin/guard.rs | src/health/* | initial | live |
 
@@ -28,7 +28,7 @@ lightweight: read-only SQLite queries + rules TOML parsing. No analysis engines.
 |---|---|---|---|---|
 | worker-no-db | src/constraints/worker.rs | src/db/* | ADR-0002 | live |
 | worker-no-tools | src/constraints/worker.rs | src/tools/* | initial | live |
-| worker-no-conventions | src/constraints/worker.rs | src/conventions/* | initial | live |
+| worker-no-conventions | src/constraints/worker.rs | src/conventions/* | initial | obsoleted (sutra/518: src/conventions deleted) |
 | worker-no-similarity | src/constraints/worker.rs | src/similarity/* | initial | live |
 
 Rationale: timely/DD worker thread is pure computation over crossbeam channels.
@@ -40,8 +40,8 @@ Ephemeral data is recomputable; worker needs no persistence (ADR-0002).
 |---|---|---|---|---|
 | db-no-tools | src/db/* | src/tools/* | initial | live |
 | parser-no-tools | src/parser/* | src/tools/* | initial | live |
-| dd-engine-no-conventions | src/constraints/engine.rs | src/conventions/* | initial | live |
-| conventions-no-constraints | src/conventions/* | src/constraints/* | initial | live |
+| dd-engine-no-conventions | src/constraints/engine.rs | src/conventions/* | initial | obsoleted (sutra/518: src/conventions deleted) |
+| conventions-no-constraints | src/conventions/* | src/constraints/* | initial | obsoleted (sutra/518: src/conventions deleted) |
 
 Rationale: data layer must not import presentation. Parser (L0) must not import
 tools. Constraint and convention engines are independent L2/L3 systems joined
@@ -53,13 +53,13 @@ only at the pipeline/tool level.
 |---|---|---|---|
 | no-tool-cycles | src/tools/ | initial | live |
 | no-constraint-cycles | src/constraints/ | initial | live |
-| no-convention-cycles | src/conventions/ | initial | live |
+| no-convention-cycles | src/conventions/ | initial | obsoleted (sutra/518: src/conventions deleted) |
 
 ### Known cross-layer coupling (advisory)
 
 | Constraint | From | To | Provenance | Status | Violations |
 |---|---|---|---|---|---|
-| parser-conventions-coupling | src/parser/* | src/conventions/* | ADR-0003 | live | 1 (adapter.rs -> mod.rs) |
+| parser-conventions-coupling | src/parser/* | src/conventions/* | ADR-0003 | obsoleted (sutra/518: src/conventions deleted) | 1 (adapter.rs -> mod.rs) |
 | similarity-health-coupling | src/similarity/* | src/health/* | initial | live | 1 (diff.rs -> findings.rs) |
 | similarity-parser-coupling | src/similarity/* | src/parser/* | initial | live | 2 (diff.rs, mod.rs -> adapter.rs) |
 
@@ -90,7 +90,7 @@ Heavyweight subsystems (guard, DD worker) must not depend on it.
 | Constraint | From | To | Status |
 |---|---|---|---|
 | lessons-no-tools | src/lessons.rs | src/tools/* | live |
-| lessons-no-conventions | src/lessons.rs | src/conventions/* | live |
+| lessons-no-conventions | src/lessons.rs | src/conventions/* | obsoleted (sutra/518: src/conventions deleted) |
 | lessons-no-constraints | src/lessons.rs | src/constraints/* | live |
 
 Rationale: lessons engine is a library consumed by tool handlers. Must not couple
@@ -102,7 +102,7 @@ lessons-no-db constraint from checkpoint:sutra/152.
 | Constraint | From | To | Provenance | Status |
 |---|---|---|---|---|
 | explore-no-similarity | src/tools/explore.rs | src/similarity/* | checkpoint:sutra/171 | live |
-| explore-no-conventions | src/tools/explore.rs | src/conventions/* | checkpoint:sutra/171 | live |
+| explore-no-conventions | src/tools/explore.rs | src/conventions/* | checkpoint:sutra/171 | obsoleted (sutra/518: src/conventions deleted) |
 | explore-no-health | src/tools/explore.rs | src/health/* | checkpoint:sutra/175 | live |
 | explore-no-lessons | src/tools/explore.rs | src/lessons.rs | checkpoint:sutra/175 | live |
 
@@ -111,6 +111,9 @@ assemble). It ranks via db rollups (fan_in, blast_radius), not health findings o
 lessons. The PRD explicitly rejects vector search, embeddings, and NL interpretation.
 
 ## Conventions
+
+FCA convention detection was deleted in sutra/518; the entries below are
+history. The lifecycle states they record were removed earlier (sutra/318).
 
 | Convention | Pattern | Lifecycle | Note |
 |---|---|---|---|
@@ -125,3 +128,4 @@ lessons. The PRD explicitly rejects vector search, embeddings, and NL interpreta
 | 2026-06-16 | sutra/171 | 2 explore-isolation constraints added, 8 tautological conventions suppressed |
 | 2026-06-16 | sutra/175 | 2 explore constraints added (health, lessons). 15 convention proposals dismissed (all tautologies). Enforcement ledger backfilled from rules.toml provenance. |
 | 2026-06-16 | sutra/157 | 3 lessons-engine isolation constraints added (no-tools, no-conventions, no-constraints). 29 orphaned convention proposals dismissed (re-clustered IDs). |
+| 2026-09-29 | sutra/518 | FCA convention engine deleted with the sutra_conventions tool. 8 constraints naming src/conventions/* removed from rules.toml (they bound nothing) and marked obsoleted above; the commented parser-conventions-coupling rule dropped with its trait. 14 waivers for deleted files removed from accepted.toml. |

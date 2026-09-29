@@ -46,11 +46,10 @@ _Avoid_: key symbol, core type (too informal)
 
 ### Rules and patterns
 
-**Convention**:
-A pattern discovered from code — what the code actually does. Detected by
-FCA from the symbol-attribute matrix. Conventions are descriptive — they
-describe reality, not intent, and are advisory: what the code does and should
-continue doing, not an absolute rule.
+**Convention** (retired, sutra/518):
+A pattern discovered from code — what the code actually does. Was detected by
+FCA from the symbol-attribute matrix; detection was deleted once nothing read
+it. Kept here so the term isn't reused for constraints.
 _Avoid_: rule (implies prescription), standard, norm
 
 **Constraint**:
@@ -116,15 +115,14 @@ _Avoid_: suppression (implies hiding), ignore, disable
 ### Core loop
 
 **Explore**:
-Agent asks sutra to find the relevant code before writing. Conventions,
-lessons, semantic anchors, and cautions for the area surface contextually as
+Agent asks sutra to find the relevant code before writing. Lessons, semantic anchors, and cautions for the area surface contextually as
 it reads (sutra_symbol, sutra_impact) — understanding arrives with the code
 rather than through a separate briefing step.
 
 **Check**:
 Incremental, real-time architectural validation. Runs on each file change
-during a session via the propagation path (Layer 0 delta through DD, HRR,
-FCA). Answers "did this edit just break something?" Fast, narrow, immediate.
+during a session via the propagation path (Layer 0 delta through DD and
+HRR). Answers "did this edit just break something?" Fast, narrow, immediate.
 The guardian during writing.
 
 **Review**:
@@ -178,11 +176,10 @@ calls + imports but not containment.
 - A **Component** contains one or more **Symbols**
 - **Symbols** are connected by **Edges** of specific kinds
 - **Boundaries** govern the allowed **Edges** between **Components**
-- **Conventions** are detected from **Symbol** attributes within a **Component**
 - **Constraints** are declared by humans and checked against **Edges** and **Symbols**
 - **Semantic anchors** are the architecturally central **Symbols** of a **Component**
-- **Explore** surfaces **Conventions**, **Lessons**, and **Anchors** to agents as they read
-- **Check** validates **Edges** and **Symbols** against **Constraints** and **Conventions** in real time
+- **Explore** surfaces **Lessons** and **Anchors** to agents as they read
+- **Check** validates **Edges** and **Symbols** against **Constraints** in real time
 - **Review** produces the **Architectural change report** from the delta of a complete change
 - **Teach** updates **Constraints**, **Boundaries**, and **Component** definitions
 - Every claim carries **Provenance**; every finding carries **Severity**

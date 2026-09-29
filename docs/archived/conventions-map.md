@@ -1,5 +1,8 @@
 # Convention system architecture map
 
+> Archived: FCA convention detection and the `sutra_conventions` tool were
+> deleted in sutra/518. Kept as history.
+
 Quick-reference for agents planning or implementing convention-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each convention-system landing.

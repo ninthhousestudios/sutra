@@ -735,12 +735,8 @@ pub fn parse_workspace(
             return Ok(PostParseResult::NoChanges);
         }
 
-        let (resolved_count, unresolved_count, skipped_count) = post_parse_sequence(
-            db,
-            &workspace.root,
-            &registry.boundary_multipliers(),
-            registry,
-        )?;
+        let (resolved_count, unresolved_count, skipped_count) =
+            post_parse_sequence(db, &workspace.root, &registry.boundary_multipliers())?;
         Ok(PostParseResult::Full {
             resolved_count,
             unresolved_count,
@@ -1169,7 +1165,6 @@ fn post_parse_sequence(
     db: &Db,
     workspace_root: &Path,
     boundary_multipliers: &HashMap<String, f64>,
-    registry: &LanguageRegistry,
 ) -> Result<(i64, i64, i64)> {
     let (resolved_count, unresolved_count, skipped_count) = resolve_references(db, workspace_root)?;
 
@@ -1222,11 +1217,6 @@ fn post_parse_sequence(
             crate::constraints::register_ratcheted_constraints(db, &all_constraints)?;
         if ratchet_count > 0 {
             info!(count = ratchet_count, "registered ratcheted constraints");
-        }
-
-        let conv_outcome = crate::conventions::pipeline::rebuild(db, registry, workspace_root)?;
-        if conv_outcome.convention_count > 0 {
-            info!(count = conv_outcome.convention_count, "rebuilt conventions");
         }
 
         if hrr_changed {

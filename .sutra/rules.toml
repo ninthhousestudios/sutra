@@ -14,15 +14,7 @@
 # ═══════════════════════════════════════════════════════════════════
 # The guard binary runs as a Claude Code PreToolUse hook on every edit.
 # It must stay lightweight: read-only SQLite queries + rules TOML parsing.
-# No FCA engine, no HRR vectors, no pipeline.
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/guard.rs"
-to = "src/conventions/*"
-name = "guard-no-conventions"
-provenance = "docs/adr/0001-sketch-mode-conventions-only.md"
-severity = "blocking"
+# No HRR vectors, no pipeline, no tool handlers.
 
 [[constraint]]
 kind = "forbidden_dep"
@@ -48,13 +40,6 @@ severity = "blocking"
 [[constraint]]
 kind = "forbidden_dep"
 from = "src/bin/guard.rs"
-to = "src/conventions/*"
-name = "guard-bin-no-conventions"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/bin/guard.rs"
 to = "src/similarity/*"
 name = "guard-bin-no-similarity"
 severity = "blocking"
@@ -64,7 +49,7 @@ severity = "blocking"
 # DD worker purity
 # ═══════════════════════════════════════════════════════════════════
 # The timely/DD worker thread is pure computation over crossbeam channels.
-# No database access, no tool handlers, no convention engine.
+# No database access, no tool handlers.
 # ADR-0002: ephemeral data is recomputable; the worker needs no persistence.
 
 [[constraint]]
@@ -85,13 +70,6 @@ severity = "blocking"
 [[constraint]]
 kind = "forbidden_dep"
 from = "src/constraints/worker.rs"
-to = "src/conventions/*"
-name = "worker-no-conventions"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/constraints/worker.rs"
 to = "src/similarity/*"
 name = "worker-no-similarity"
 severity = "blocking"
@@ -102,8 +80,6 @@ severity = "blocking"
 # ═══════════════════════════════════════════════════════════════════
 # Data layer (db/) must not import presentation (tools/).
 # Parser (L0) must not import tools.
-# Constraint engine must not import convention engine and vice versa
-# (they are independent L2/L3 systems joined only at the pipeline/tool level).
 
 [[constraint]]
 kind = "forbidden_dep"
@@ -119,19 +95,6 @@ to = "src/tools/*"
 name = "parser-no-tools"
 severity = "blocking"
 
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/constraints/engine.rs"
-to = "src/conventions/*"
-name = "dd-engine-no-conventions"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/conventions/*"
-to = "src/constraints/*"
-name = "conventions-no-constraints"
-severity = "blocking"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -152,17 +115,6 @@ severity = "blocking"
 # ═══════════════════════════════════════════════════════════════════
 # These document existing architectural debt. Not blocking because they
 # exist for pragmatic reasons, but agents should not deepen them.
-
-# parser::adapter imports conventions::SymbolAttrs for the FcaAttributeSource
-# extension trait (ADR-0003). This is the designed coupling — one-directional,
-# no back-edge. Waived rather than enforced.
-# [[constraint]]
-# kind = "forbidden_dep"
-# from = "src/parser/*"
-# to = "src/conventions/*"
-# name = "parser-conventions-coupling"
-# provenance = "docs/adr/0003-layered-adapter-traits.md"
-# severity = "advisory"
 
 # similarity::mod imports parser::adapter::default_registry.
 # Math/embedding layer should not depend on parser infrastructure.
@@ -186,11 +138,6 @@ scope = "src/constraints/"
 name = "no-constraint-cycles"
 severity = "blocking"
 
-[[constraint]]
-kind = "no_cycles"
-scope = "src/conventions/"
-name = "no-convention-cycles"
-severity = "blocking"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -273,14 +220,6 @@ severity = "blocking"
 [[constraint]]
 kind = "forbidden_dep"
 from = "src/tools/explore.rs"
-to = "src/conventions/*"
-name = "explore-no-conventions"
-provenance = "checkpoint:sutra/171"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/tools/explore.rs"
 to = "src/lessons.rs"
 name = "explore-no-lessons"
 provenance = "checkpoint:sutra/175"
@@ -291,7 +230,7 @@ severity = "blocking"
 # Lessons engine isolation (checkpoint:sutra/157, 2026-06-16)
 # ═══════════════════════════════════════════════════════════════════
 # Lessons engine is a library consumed by tool handlers. It must not
-# couple back to tools, conventions (FCA), or constraints (DD).
+# couple back to tools or constraints (DD).
 
 [[constraint]]
 kind = "forbidden_dep"
@@ -304,23 +243,11 @@ severity = "blocking"
 [[constraint]]
 kind = "forbidden_dep"
 from = "src/lessons.rs"
-to = "src/conventions/*"
-name = "lessons-no-conventions"
-provenance = "checkpoint:sutra/157"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/lessons.rs"
 to = "src/constraints/*"
 name = "lessons-no-constraints"
 provenance = "checkpoint:sutra/157"
 severity = "blocking"
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Convention management
-# ═══════════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════════
 # AST-pattern constraints

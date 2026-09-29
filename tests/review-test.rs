@@ -588,8 +588,7 @@ forbidden_deps = [
     let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
     let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
 
-    // Symbols — pub functions without docs trigger FCA convention
-    // when enough similar symbols establish the pattern
+    // One symbol per side of the forbidden import
     db.insert_symbol(&sym(
         f_view.id,
         "view::render",
@@ -610,36 +609,6 @@ forbidden_deps = [
         Some(3),
     ))
     .unwrap();
-
-    // Create enough pub+has_doc functions to establish convention {kind:function, vis:pub} => {has_doc}
-    for i in 0..6 {
-        let path = format!("src/lib_{i}.rs");
-        db.upsert_file(&path, "rust", &format!("lib{i}"), 50, true)
-            .unwrap();
-        let f = db.file_by_path(&path).unwrap().unwrap();
-        let qn = format!("lib_{i}::documented_fn");
-        db.insert_symbol(&InsertSymbolParams {
-            file_id: f.id,
-            qualified_name: &qn,
-            short_name: "documented_fn",
-            kind: "function",
-            signature: Some("fn documented_fn()"),
-            signature_hash: None,
-            structural_hash: None,
-            visibility: Some("pub"),
-            start_line: 1,
-            start_col: 0,
-            end_line: 10,
-            end_col: 0,
-            parent_symbol_id: None,
-            docstring: Some("A documented function"),
-            cyclomatic: None,
-            cognitive: Some(2),
-            flags: 0,
-            language_attrs: None,
-        })
-        .unwrap();
-    }
 
     // Import edge: view.rs -> query.rs (triggers forbidden dep)
     db.insert_import(
@@ -939,64 +908,6 @@ name = "ui-not-db"
         findings.constraint_violations_total, 1,
         "total should include waived violations"
     );
-}
-
-#[test]
-fn convention_pipeline_persists_conventions_to_db() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = Db::open_unchecked("test", dir.path()).unwrap();
-
-    // 40 pub functions: 38 with signatures (95%), enough for FCA to find
-    // the implication {kind:function, vis:pub} => {has_sig} at 0.95 confidence.
-    for i in 0..40 {
-        let path = format!("src/f_{i}.rs");
-        db.upsert_file(&path, "rust", &format!("f{i}"), 50, true)
-            .unwrap();
-        let f = db.file_by_path(&path).unwrap().unwrap();
-        let qn = format!("f_{i}::process");
-        let sig = if i < 38 { Some("fn process()") } else { None };
-        let doc = if i % 5 == 0 { Some("docs") } else { None };
-        db.insert_symbol(&InsertSymbolParams {
-            file_id: f.id,
-            qualified_name: &qn,
-            short_name: "process",
-            kind: "function",
-            signature: sig,
-            signature_hash: None,
-            structural_hash: None,
-            visibility: Some("pub"),
-            start_line: 1,
-            start_col: 0,
-            end_line: 10,
-            end_col: 0,
-            parent_symbol_id: None,
-            docstring: doc,
-            cyclomatic: None,
-            cognitive: Some(2),
-            flags: 0,
-            language_attrs: None,
-        })
-        .unwrap();
-    }
-
-    assert!(db.all_conventions().unwrap().is_empty());
-
-    let registry = default_registry();
-    let outcome = sutra::conventions::pipeline::rebuild(&db, &registry, dir.path()).unwrap();
-    assert!(outcome.convention_count > 0);
-
-    let conventions = db.all_conventions().unwrap();
-    assert!(
-        !conventions.is_empty(),
-        "conventions should be persisted to DB after pipeline::rebuild"
-    );
-    for c in &conventions {
-        assert!(!c.id.is_empty());
-        assert!(!c.antecedent.is_empty());
-        assert!(!c.consequent.is_empty());
-        assert!(!c.first_seen.is_empty());
-        assert!(!c.last_seen.is_empty());
-    }
 }
 
 #[test]

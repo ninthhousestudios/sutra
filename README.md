@@ -4,9 +4,9 @@
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a symbol graph of your codebase plus write-time checks against the patterns that cause bugs in agent-written code, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations and accumulates code-anchored lessons from agent experience. It exposes all of this through MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations and accumulates code-anchored lessons from agent experience. It exposes all of this through MCP tools that AI coding agents (and humans) can call.
 
-The core loop: **explore** (find relevant code in one call, with lessons and conventions surfaced contextually as an agent reads) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints and boundaries).
+The core loop: **explore** (find relevant code in one call, with lessons surfaced contextually as an agent reads) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints and boundaries).
 
 ## Install
 
@@ -38,13 +38,11 @@ Every response includes a **freshness envelope** (`as_of`, `is_stale`) so caller
 
 ### 2. Architectural components (Layer 1)
 
-Sutra discovers components — groups of related code — via directory-structure clustering and human refinement. Components have stable identity, lifecycle state (`stable` or `sketch`), and human-assigned aliases. They scope conventions and boundary constraints, and feed explore ranking.
+Sutra discovers components — groups of related code — via directory-structure clustering and human refinement. Components have stable identity, lifecycle state (`stable` or `sketch`), and human-assigned aliases. They scope boundary constraints and feed explore ranking.
 
-### 3. Convention detection (Layer 2)
+### 3. Convention detection (retired)
 
-Formal Concept Analysis (FCA) discovers implicit patterns in your code: "public functions return Result," "handlers take &self as first parameter," "error types implement Display." An identity→obligation filter separates "what things are" (structural facts) from "what they should do" (behavioral patterns worth surfacing), and toolchain-enforced patterns (e.g. `async` implying a returned future) are automatically excluded since the compiler already guarantees them.
-
-Detection runs in the parse pipeline and persists to the index — each convention with its antecedent→consequent implication, support, confidence, and component scope. Conventions are descriptive only: no MCP tool lists them (sutra/518) and they are not enforced in review. (Two earlier in-loop consumers — an orientation summary and a review-time deviation report — were retired after live use showed a high false-positive rate.)
+Formal Concept Analysis (FCA) used to mine implicit patterns ("public functions return Result") on every parse. Its in-loop consumers, an orientation summary and a review-time deviation report, were removed for their false-positive rate (sutra/312, 313). The last reader, the `sutra_conventions` list tool, went in sutra/518, and detection was deleted with it. Rules you want enforced are hand-written `[[constraint]]` entries (Layer 3).
 
 ### 4. Constraint enforcement (Layer 3)
 
@@ -185,7 +183,7 @@ This powers duplicate detection (pattern families of 3+ structurally identical f
 
 ### 8. Code-anchored lessons (Layer 7)
 
-Lessons are the negative complement to conventions: conventions say "do this," lessons say "don't do that, here's why." They capture experiential knowledge — things learned about code that a future editor needs to know — in a shared SQLite store (`~/.sutra/lessons.db`) that all sutra instances read.
+Lessons carry negative knowledge: "don't do that, here's why." They capture experiential knowledge — things learned about code that a future editor needs to know — in a shared SQLite store (`~/.sutra/lessons.db`) that all sutra instances read.
 
 **Writing:** Agents call `sutra_remember` with text and location anchors (the symbol or file they were working on). Sutra enriches the lesson automatically — inferring import-pattern anchors, directory globs, and category tags from the workspace index. Writing is low-ceremony; quality is controlled reactively.
 
@@ -400,7 +398,6 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 | **Tree-sitter** | Parsing — extracts symbols, references, imports from source code |
 | **SQLite (WAL)** | Persistence — relational storage for all layers, snapshot history |
 | **Differential dataflow** (timely) | Constraint enforcement — maintained views over the import graph for cycle detection, forbidden deps, and blast radius. Incremental: feed it edge deltas, all views update automatically |
-| **Formal Concept Analysis** (FCA) | Convention detection — discovers implications in the symbol-attribute matrix, validated by support/confidence thresholds. Per-component adaptive thresholds |
 | **HRR vectors** (1024-dim) | Structural similarity — FFT-based circular convolution encodes AST subtrees into fixed-size vectors. Strip mode removes identifiers for pure structural matching; embed mode preserves them |
 | **Graph metrics** | Review and ranking signals — fan-in, PageRank importance, cognitive/cyclomatic complexity from AST, churn and co-change from git history |
 
@@ -413,7 +410,6 @@ file changed
   → graph rollups (fan_in, blast_radius)
   → git co-change computation
   → component membership update
-  → FCA convention rebuild
   → HRR vector encoding
   → snapshot recording (parse record)
 ```
@@ -437,13 +433,13 @@ workspace files ───► tree-sitter → symbols, refs, imports
                 │ component membership │
                 └────────┬─────────────┘
                          ▼
-    ┌────────────────────┼────────────────────┐
-    ▼                    ▼                     ▼
-FCA conventions    DD constraints         HRR vectors
-(patterns,         (forbidden deps,       (similarity,
- list-only)         boundaries, cycles)    duplicates)
-    │                    │                     │
-    └────────────────────┼─────────────────────┘
+              ┌──────────┴──────────┐
+              ▼                     ▼
+        DD constraints         HRR vectors
+        (forbidden deps,       (similarity,
+         boundaries, cycles)    duplicates)
+              │                     │
+              └──────────┬──────────┘
                          ▼
                 review signals (co-change,
                 complexity, dead code)

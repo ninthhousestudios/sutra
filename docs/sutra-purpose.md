@@ -140,7 +140,6 @@ follows these or gives a reason.
 | Dead code | `sutra_dead` | Substrate for the orphans mechanism (resolution corrected in sutra/477; liveness rules in `db::orphans`, sutra/483) |
 | Git signals | `sutra_cochange`, `sutra_hotspots`, per-symbol cyclomatic/cognitive complexity | Review inputs; hotspots were the one health-era signal that was right on all 4 pilot repos |
 | Components | Directory-based clustering (no MCP tool since sutra/518) | Boundary constraints and explore ranking |
-| Conventions | FCA detection, persisted by the parse pipeline (no MCP tool since sutra/518) | Descriptive. In-loop consumers were removed after live use showed high false positives (sutra/312, 313) |
 | Vocabulary | `.sutra/aliases.toml` | Human terms → code, resolved first by explore |
 | Lessons | `~/.sutra/lessons.db`, `sutra_remember`, `sutra_lessons`, surfaced inline by symbol/impact | Cross-project negative knowledge anchored to code |
 
@@ -156,7 +155,8 @@ follows these or gives a reason.
   `sutra_conventions`, `sutra_components`, `sutra_health`): retired in
   sutra/518 for near-zero use or noisy output. Verdicts are in
   [tool-surface-audit.md](tool-surface-audit.md). `diff_impact`'s symbol
-  changes live on in `sutra_review`; `sutra health` stays on the CLI.
+  changes live on in `sutra_review`; `sutra health` stays on the CLI. FCA
+  convention detection went with `sutra_conventions`, its last reader.
 - **Verification orchestration** (Kani, proptest, mutation testing as a sutra
   pipeline): not pursued. TESTVAC is real, but its fix is red-green discipline
   and mutation testing run by the agent, not a sutra layer. Revisit only if

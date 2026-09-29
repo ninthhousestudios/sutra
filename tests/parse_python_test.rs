@@ -1,9 +1,7 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 use sutra::config::Config;
-use sutra::conventions::{enrich_all_effects, extract_attrs_for_symbol};
 use sutra::db::Db;
 use sutra::parser::adapter::default_registry;
 use sutra::parser::{SymbolKind, flatten_symbols, parse_file};
@@ -389,66 +387,6 @@ fn cross_file_import_resolution_src_layout() {
 // Effect detection end-to-end
 // ---------------------------------------------------------------------------
 
-#[test]
-fn effect_detection_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("effects.py"),
-        "\
-def read_file(path):
-    f = open(path)
-    return f.read()
-
-def fetch_url(url):
-    import requests
-    return requests.get(url)
-
-def run_cmd(cmd):
-    import subprocess
-    return subprocess.run(cmd)
-",
-    )
-    .unwrap();
-
-    let db_dir = tempfile::tempdir().unwrap();
-    let ws = make_python_entry("py-effects", dir.path().to_path_buf());
-    let config = make_config(db_dir.path());
-    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
-    let cancel = AtomicBool::new(false);
-    let registry = default_registry();
-
-    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
-
-    let file = db
-        .file_by_path("effects.py")
-        .unwrap()
-        .expect("effects.py should be indexed");
-    let syms = db.find_symbols_by_file(file.id).unwrap();
-    let refs = db.find_refs_in_file(file.id).unwrap();
-    let adapter = registry.adapter_for_language("python").unwrap();
-    let fca_source = adapter.as_fca_source().unwrap();
-    let callee_cache = HashMap::new();
-
-    for (fn_name, expected_effect) in [
-        ("read_file", "effect:fs"),
-        ("fetch_url", "effect:net"),
-        ("run_cmd", "effect:process"),
-    ] {
-        let sym = syms
-            .iter()
-            .find(|s| &*s.short_name == fn_name)
-            .unwrap_or_else(|| panic!("missing symbol {fn_name}"));
-        let mut attrs = extract_attrs_for_symbol(sym, "effects.py", "python", &registry)
-            .unwrap_or_else(|| panic!("no attrs for {fn_name}"));
-        enrich_all_effects(&mut attrs, sym, &refs, &callee_cache, fca_source, None);
-        assert!(
-            attrs.attributes.contains(&expected_effect.to_string()),
-            "{fn_name} should have {expected_effect}, got: {:?}",
-            attrs.attributes
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Adapter registration + effect patterns
 // ---------------------------------------------------------------------------
@@ -461,16 +399,6 @@ fn python_adapter_registered() {
         .expect("PythonAdapter should be registered");
     assert_eq!(adapter.language_id(), "python");
     assert!(adapter.extensions().contains(&"py"));
-
-    let fca = adapter
-        .as_fca_source()
-        .expect("Python should have FCA source");
-    let effect_names: Vec<_> = fca.effect_patterns().iter().map(|p| p.attr_name).collect();
-    assert!(effect_names.contains(&"effect:fs"));
-    assert!(effect_names.contains(&"effect:net"));
-    assert!(effect_names.contains(&"effect:db"));
-    assert!(effect_names.contains(&"effect:io"));
-    assert!(effect_names.contains(&"effect:process"));
 }
 
 // ---------------------------------------------------------------------------
