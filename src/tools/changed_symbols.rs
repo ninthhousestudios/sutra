@@ -38,6 +38,8 @@ impl ChangedSymbols {
     pub fn from_diff(db: &Db, paths: &[String], mut diff: DiffFilesResult) -> Result<Self> {
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
+            // swallow: no entry means no symbol changed (or no parser for the
+            // file); a diff failure is carried in `diff.errors`, not here.
             let changes = diff.per_file.remove(path).unwrap_or_default();
             let rows = match db.file_by_path(path)? {
                 Some(file) => db.find_symbols_by_file(file.id)?,
@@ -105,6 +107,7 @@ impl ChangedSymbols {
             let _ = writeln!(out, "\n{total} changed symbol(s):");
         }
         for (file, c, cognitive) in self.iter().take(MAX_RENDERED) {
+            // swallow: no metric prints nothing; there is no error to hide.
             let cognitive = cognitive
                 .map(|n| format!("  cognitive {n}"))
                 .unwrap_or_default();
