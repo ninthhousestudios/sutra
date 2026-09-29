@@ -17,6 +17,7 @@ pub struct ReadArgs {
         \"GuardConfig::from_env\") or a short name (e.g. \"from_env\"). \
         Do NOT prefix with file paths or extensions — \"build_findings\" not \"review.rs::build_findings\"."
     )]
+    #[serde(alias = "query", alias = "name")]
     pub symbol: String,
     #[serde(default)]
     #[schemars(
@@ -497,6 +498,16 @@ fn diagnose_symbol_input(symbol: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_and_name_aliases_deserialize_to_symbol() {
+        // Agents reach for `query` (explore's arg) or `name`; both must resolve.
+        for key in ["symbol", "query", "name"] {
+            let args: ReadArgs = serde_json::from_value(serde_json::json!({ key: "evaluate_dd" }))
+                .expect("invariant: aliased key deserializes");
+            assert_eq!(args.symbol, "evaluate_dd", "key {key}");
+        }
+    }
 
     #[test]
     fn diagnose_file_dot_rs_prefix() {

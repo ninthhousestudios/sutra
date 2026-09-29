@@ -16,7 +16,7 @@ pub struct RememberArgs {
     pub text: Option<String>,
     /// Location anchors: symbol names or file paths this lesson applies to.
     /// Required when storing a new lesson; ignored when citing.
-    #[serde(default)]
+    #[serde(default, alias = "anchors")]
     pub location_anchors: Option<Vec<LocationAnchor>>,
     /// Yojana task IDs that motivated this lesson (e.g. ["sutra/38"]).
     /// For cite mode, the first entry is recorded as the citing task.
@@ -368,8 +368,25 @@ fn import_root(imported_path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::IMPORT_TECH_MAP;
+    use super::{IMPORT_TECH_MAP, RememberArgs};
     use crate::lessons::{LANG_TAG_PREFIX, normalize_category};
+
+    /// Agents write `anchors` far more often than `location_anchors` (98
+    /// failed calls in the sutra/454 transcript scan); the alias must accept it.
+    #[test]
+    fn anchors_alias_deserializes_to_location_anchors() {
+        for key in ["anchors", "location_anchors"] {
+            let args: RememberArgs = serde_json::from_value(serde_json::json!({
+                "text": "t",
+                key: ["src/lib.rs", "Foo::bar"],
+            }))
+            .expect("invariant: anchor list deserializes");
+            let anchors = args
+                .location_anchors
+                .expect("invariant: alias populates location_anchors");
+            assert_eq!(anchors.len(), 2, "key {key}");
+        }
+    }
 
     /// Enrichment writes technology tags automatically, so a technology name
     /// that `normalize_category` reads as a language claim is not a mislabel —
