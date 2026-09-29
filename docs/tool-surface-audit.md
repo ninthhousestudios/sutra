@@ -1,8 +1,8 @@
 # MCP tool surface audit (sutra/454)
 
 2026-09-29. What each of the 29 MCP tools is used for, whether its output is
-worth reading, and where it should live. Status: **proposed**. The verdicts
-below still need sign-off before the follow-up tasks are filed.
+worth reading, and where it should live. Status: **approved** 2026-09-29.
+Implementation is arc sutra/~18 (tasks sutra/513–521).
 
 ## Method
 
