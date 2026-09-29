@@ -14,9 +14,10 @@ below still need sign-off before the follow-up tasks are filed.
   the next 3 tools the agent used.
 - **Other harnesses.** Opencode made 44 calls and codex made none, so neither
   changes any verdict. CLI via Bash: mostly `parse`, `check`, `workspaces`
-  and `firings` during back-test work. The one pre-commit hook
-  (`adityas/backend`) runs `sutra check --diff staged`. Hook runs don't show
-  up in transcripts.
+  and `firings` during back-test work. A repo-local pre-commit hook
+  (`adityas/backend`) runs `sutra check --diff staged`, and so does the global
+  dispatcher in every repo with a `.sutra/` marker (F6). Hook runs appear in
+  transcripts only as `git commit` output, not as sutra calls.
 - **Era.** The tool set was renamed several times. `read` became `symbol` on
   2026-08-12. `find`/`grep` became `explore`/`lookup`. `status`, `tools`,
   `add_root` and `parse` became `workspace`. `file_health`, `trend` and
@@ -170,20 +171,22 @@ no longer exists.
 
 serde aliases would remove this whole class of error.
 
-### F6. `sutra check` is the best review surface, and it's wired into one repo
+### F6. `sutra check` is the best review surface, and it already runs on every commit
 
 `sutra check --diff HEAD~3..HEAD` took 2.3 s. The human-format output named
 the forbidden dep, the pre-existing fan-in and the three dup-exists pairs
 with their shared token runs. That is diff-scoped output that names sites,
-which is what the purpose doc's design rules ask for. Only
-`adityas/backend/.git/hooks/pre-commit` runs it. The global dispatcher
-`~/.config/git/hooks/pre-commit` already chains per-repo hooks, but doesn't
-call sutra.
+which is what the purpose doc's design rules ask for.
 
-A commit-time run puts the advisories in the output of the agent's own
-`git commit`. That doesn't depend on the agent remembering to run a review
-skill. `review` ran in 118 sessions in 7 weeks, and far more commits than
-that were made.
+The global dispatcher (`~/.config/git/hooks/pre-commit`, line 52) already
+runs `sutra check --diff staged` in every repo with a `.sutra/` marker. That
+is 33 local repos. So every agent `git commit` already shows the advisories
+in its Bash output, whether or not anyone runs a review skill. For
+comparison, `review` ran in 118 sessions in 7 weeks.
+
+The open question is whether agents act on what the commit shows them.
+sutra/485 measures that from the firings log. `sutra_review`'s score fields
+add nothing that the commit-time check lacks.
 
 ### Smaller defects found along the way
 
@@ -301,11 +304,9 @@ Also: `sutra check` renders `changed_symbols` in its human format, so
 
 In priority order:
 
-1. **Global pre-commit.** Add `sutra check --diff staged` to
-   `~/.config/git/hooks/pre-commit`. It exits non-zero only on blocking
-   violations and prints advisories without gating. Skip repos without a
-   registered workspace. Cost is ~2 s. This puts every write-side mechanism
-   in front of every agent commit.
+1. **Commit-time check.** Already in place (F6). No change is needed.
+   Measure whether agents act on it before building another surface
+   (sutra/485).
 2. **Rewrite vidhi-review step 3.** Lead with the advisories and constraint
    violations, and remove the score, FCA and recommended-reads prose.
    Refresh vidhi-release-review (dead tool names) and vidhi-sutra-adopt
