@@ -154,7 +154,7 @@ and deliberately skips the expensive derived tiers. The split is the contract:
 
 Consequence: right after an incremental refresh, symbol/ref/import queries reflect
 the edit, but importance-ranked or similarity/health-derived views (e.g.
-`sutra_map` ordering by blast_radius, `sutra_health`) may lag one edit behind
+`sutra_map` ordering by fan-in/PageRank, `sutra_health`) may lag one edit behind
 until the next full parse. This is intentional — the deferred tiers carry O(n²)
 phases that must not run on the query path.
 

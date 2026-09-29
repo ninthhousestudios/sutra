@@ -80,17 +80,19 @@ fn map_explain_true_has_breakdown() {
     assert!(explain.is_object(), "_explain must be present on each file");
 
     let breakdown = &explain["importance_breakdown"];
-    assert!(breakdown["symbol_count"].is_number());
+    assert!(breakdown["symbol_boost"].is_number());
     assert!(breakdown["fan_in_boost"].is_number());
-    assert!(breakdown["blast_radius"].is_number());
+    assert!(
+        breakdown.get("blast_radius").is_none(),
+        "blast radius is not a ranking term (sutra/516)"
+    );
     assert!(breakdown["pagerank_boost"].is_number());
     assert!(breakdown["complexity_boost"].is_number());
 
     // Verify breakdown sums to importance
     let importance = entry["importance"].as_i64().unwrap();
-    let sum = breakdown["symbol_count"].as_i64().unwrap()
+    let sum = breakdown["symbol_boost"].as_i64().unwrap()
         + breakdown["fan_in_boost"].as_i64().unwrap()
-        + breakdown["blast_radius"].as_i64().unwrap()
         + breakdown["pagerank_boost"].as_i64().unwrap()
         + breakdown["complexity_boost"].as_i64().unwrap();
     assert_eq!(importance, sum);

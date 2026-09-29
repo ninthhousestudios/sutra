@@ -540,7 +540,7 @@ impl SutraServer {
     }
 
     #[tool(description = "Project file skeleton ranked by importance. \
-        Returns files sorted by (symbol_count + fan_in*2 + blast_radius).")]
+        Returns files sorted by min(symbols, 50) + fan_in*2 + pagerank*2000 + min(max_cognitive, 20).")]
     pub async fn sutra_map(
         &self,
         Parameters(args): Parameters<MapArgs>,

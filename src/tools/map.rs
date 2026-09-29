@@ -8,6 +8,9 @@ use crate::freshness::FreshnessAnnotator;
 
 use super::ToolContext;
 
+/// Cap on the symbol-count term of a file's importance score.
+const SYMBOL_CAP: i64 = 50;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MapArgs {
     #[serde(default)]
@@ -65,14 +68,18 @@ fn handle_inner(
         })
         .map(|f| {
             let symbol_count = sym_counts.get(&f.id).copied().unwrap_or(0);
-            let pr_boost = (f.pagerank.unwrap_or(0.0) * 1000.0) as i64;
+            // Transitive blast radius is deliberately not a term: import SCCs
+            // make it near-constant across a Rust crate (sutra/516). Symbol
+            // count is capped so file size cannot swamp the structural terms.
+            let symbol_boost = symbol_count.min(SYMBOL_CAP);
+            let pr_boost = (f.pagerank.unwrap_or(0.0) * 2000.0) as i64;
             let (max_cog, avg_cog) = complexity_by_file.get(&f.id).copied().unwrap_or((0, 0.0));
             let complexity_boost = max_cog.min(20);
-            let importance =
-                symbol_count + f.fan_in_files * 2 + f.blast_radius + pr_boost + complexity_boost;
+            let importance = symbol_boost + f.fan_in_files * 2 + pr_boost + complexity_boost;
             (
                 f,
                 symbol_count,
+                symbol_boost,
                 importance,
                 max_cog,
                 avg_cog,
@@ -82,13 +89,22 @@ fn handle_inner(
         })
         .collect();
 
-    entries.sort_by_key(|e| std::cmp::Reverse(e.2));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.3));
     entries.truncate(limit as usize);
 
     let items: Vec<_> = entries
         .iter()
         .map(
-            |(f, sym_count, importance, max_cog, avg_cog, pr_boost, complexity_boost)| {
+            |(
+                f,
+                sym_count,
+                symbol_boost,
+                importance,
+                max_cog,
+                avg_cog,
+                pr_boost,
+                complexity_boost,
+            )| {
                 let mut entry = json!({
                     "path": f.path,
                     "language": f.language,
@@ -104,9 +120,8 @@ fn handle_inner(
                 if explain {
                     entry["_explain"] = json!({
                         "importance_breakdown": {
-                            "symbol_count": sym_count,
+                            "symbol_boost": symbol_boost,
                             "fan_in_boost": f.fan_in_files * 2,
-                            "blast_radius": f.blast_radius,
                             "pagerank_boost": pr_boost,
                             "complexity_boost": complexity_boost,
                         }
@@ -123,7 +138,7 @@ fn handle_inner(
     let mut result = json!({ "files": items, "total": items.len() });
     if explain {
         result["_explain"] = json!({
-            "formula": "symbol_count + fan_in_files*2 + blast_radius + floor(pagerank*1000) + min(max_cognitive, 20)"
+            "formula": "min(symbol_count, 50) + fan_in_files*2 + floor(pagerank*2000) + min(max_cognitive, 20)"
         });
     }
     if let Some(ann) = annotator {
