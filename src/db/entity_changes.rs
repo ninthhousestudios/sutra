@@ -19,6 +19,16 @@ pub struct EntityChangeRow {
     pub old_file_path: Option<String>,
 }
 
+/// One symbol's in-window churn, from [`Db::symbol_churn_since`].
+pub struct SymbolChurnRow {
+    pub qualified_name: String,
+    pub file_path: String,
+    pub kind: String,
+    pub start_line: i64,
+    pub cognitive: i64,
+    pub commits: i64,
+}
+
 const MAX_PAIR_ENTITIES: usize = 50;
 
 impl Db {
@@ -139,6 +149,39 @@ impl Db {
                 let jaccard: f64 = row.get(3)?;
                 let confidence: f64 = row.get(4)?;
                 Ok((name, file, jaccard, confidence, shared))
+            })?
+            .collect();
+        Ok(rows?)
+    }
+
+    /// Indexed symbols that changed in commits at or after `since` (unix
+    /// seconds), with their cognitive complexity: (qualified_name, file_path,
+    /// kind, start_line, cognitive, commits). Cosmetic-only changes don't count
+    /// as churn. Symbols without a cognitive score are left out.
+    pub fn symbol_churn_since(&self, since: i64) -> Result<Vec<SymbolChurnRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.qualified_name, f.path, MIN(s.kind), MIN(s.start_line),
+                    MAX(s.cognitive), COUNT(DISTINCT ec.commit_hash)
+             FROM entity_changes ec
+             JOIN entity_commits c ON c.hash = ec.commit_hash
+             JOIN files f ON f.path = ec.file_path
+             JOIN symbols s ON s.file_id = f.id AND s.qualified_name = ec.qualified_name
+             WHERE c.committed_at >= ?1
+               AND ec.change_type != 'cosmetic_changed'
+               AND s.cognitive IS NOT NULL
+             GROUP BY f.path, s.qualified_name",
+        )?;
+        let rows: rusqlite::Result<Vec<SymbolChurnRow>> = stmt
+            .query_map(params![since], |row| {
+                Ok(SymbolChurnRow {
+                    qualified_name: row.get(0)?,
+                    file_path: row.get(1)?,
+                    kind: row.get(2)?,
+                    start_line: row.get(3)?,
+                    cognitive: row.get(4)?,
+                    commits: row.get(5)?,
+                })
             })?
             .collect();
         Ok(rows?)

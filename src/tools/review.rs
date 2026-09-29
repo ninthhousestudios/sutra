@@ -555,6 +555,72 @@ fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel 
 /// same floor.
 const MIN_PARTNER_SHARED_COMMITS: i64 = 2;
 
+/// A co-changing file pair with no static edge between the two files: history
+/// couples them, the code does not say why. `a`/`b` are file ids.
+pub struct UncoupledPair {
+    pub a: i64,
+    pub b: i64,
+    pub a_path: Arc<str>,
+    pub b_path: Arc<str>,
+    pub jaccard: f64,
+    pub shared_commits: i64,
+}
+
+/// The workspace's co-change jaccard threshold. A malformed `components.toml`
+/// is an error, not the default (sutra/432).
+pub fn cochange_threshold(workspace_root: &Path) -> Result<f64> {
+    Ok(components::load_config(workspace_root)?
+        .cochange_threshold
+        .unwrap_or(components::DEFAULT_COCHANGE_THRESHOLD))
+}
+
+/// Every co-change pair at or above `threshold` that shares at least
+/// [`MIN_PARTNER_SHARED_COMMITS`], has no static edge, and pairs test with test
+/// or source with source. Jaccard descending; ties keep query order.
+pub fn uncoupled_cochange_pairs(db: &Db, threshold: f64) -> Result<Vec<UncoupledPair>> {
+    let cochange_pairs = db.cochange_pairs_above_threshold(threshold)?;
+
+    let all_files: HashMap<i64, Arc<str>> = db
+        .all_files()?
+        .into_iter()
+        .map(|f| (f.id, f.path))
+        .collect();
+
+    let static_edges: HashSet<(i64, i64)> = db.static_file_edges()?.into_iter().collect();
+
+    let mut pairs: Vec<UncoupledPair> = cochange_pairs
+        .into_iter()
+        .filter_map(|(a, b, jaccard, shared_commits)| {
+            if shared_commits < MIN_PARTNER_SHARED_COMMITS {
+                return None;
+            }
+            if static_edges.contains(&(a.min(b), a.max(b))) {
+                return None;
+            }
+            let a_path = all_files.get(&a)?;
+            let b_path = all_files.get(&b)?;
+            if components::is_test_file(a_path) != components::is_test_file(b_path) {
+                return None;
+            }
+            Some(UncoupledPair {
+                a,
+                b,
+                a_path: Arc::clone(a_path),
+                b_path: Arc::clone(b_path),
+                jaccard,
+                shared_commits,
+            })
+        })
+        .collect();
+
+    pairs.sort_by(|x, y| {
+        y.jaccard
+            .partial_cmp(&x.jaccard)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(pairs)
+}
+
 /// Co-change partners of the changed files that share no static edge with them.
 /// A failure is an `Err`, never an empty list: "no partners" must mean the
 /// history was read and none qualified (sutra/476).
@@ -563,10 +629,7 @@ fn behavioral_coupling(
     workspace_root: &Path,
     changed_paths: &[String],
 ) -> Result<Vec<serde_json::Value>> {
-    let config = components::load_config(workspace_root)?;
-    let threshold = config
-        .cochange_threshold
-        .unwrap_or(components::DEFAULT_COCHANGE_THRESHOLD);
+    let threshold = cochange_threshold(workspace_root)?;
 
     let mut changed_ids: HashMap<i64, &str> = HashMap::new();
     for p in changed_paths {
@@ -578,52 +641,26 @@ fn behavioral_coupling(
         return Ok(Vec::new());
     }
 
-    let cochange_pairs = db.cochange_pairs_above_threshold(threshold)?;
-
-    let all_files: HashMap<i64, Arc<str>> = db
-        .all_files()?
+    Ok(uncoupled_cochange_pairs(db, threshold)?
         .into_iter()
-        .map(|f| (f.id, f.path))
-        .collect();
-
-    let static_edges: HashSet<(i64, i64)> = db.static_file_edges()?.into_iter().collect();
-
-    let mut entries: Vec<(f64, serde_json::Value)> = cochange_pairs
-        .into_iter()
-        .filter_map(|(fa, fb, jaccard, shared)| {
-            if shared < MIN_PARTNER_SHARED_COMMITS {
-                return None;
-            }
-            let (changed_id, partner_id) =
-                if changed_ids.contains_key(&fa) && !changed_ids.contains_key(&fb) {
-                    (fa, fb)
-                } else if changed_ids.contains_key(&fb) && !changed_ids.contains_key(&fa) {
-                    (fb, fa)
-                } else {
-                    return None;
-                };
-            if static_edges.contains(&(changed_id.min(partner_id), changed_id.max(partner_id))) {
-                return None;
-            }
+        .filter_map(|pair| {
+            let (changed_id, partner_path) = match (
+                changed_ids.contains_key(&pair.a),
+                changed_ids.contains_key(&pair.b),
+            ) {
+                (true, false) => (pair.a, pair.b_path),
+                (false, true) => (pair.b, pair.a_path),
+                _ => return None,
+            };
             let changed_path = changed_ids.get(&changed_id)?;
-            let partner_path = all_files.get(&partner_id)?;
-            if components::is_test_file(changed_path) != components::is_test_file(partner_path) {
-                return None;
-            }
-            Some((
-                jaccard,
-                json!({
-                    "changed_file": changed_path,
-                    "partner": partner_path,
-                    "jaccard": jaccard,
-                    "shared_commits": shared,
-                }),
-            ))
+            Some(json!({
+                "changed_file": changed_path,
+                "partner": partner_path,
+                "jaccard": pair.jaccard,
+                "shared_commits": pair.shared_commits,
+            }))
         })
-        .collect();
-
-    entries.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(entries.into_iter().map(|(_, v)| v).collect())
+        .collect())
 }
 
 /// The review's JSON: what changed, per file and per symbol, and the

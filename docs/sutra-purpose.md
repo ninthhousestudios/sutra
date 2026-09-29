@@ -137,8 +137,8 @@ follows these or gives a reason.
 | Constraints and guard | `.sutra/rules.toml` (forbidden deps, cycles, fan-in, forbidden_patterns), DD engine, `sutra-guard` edit hook, `sutra check`, `sutra_constraints` ([constraints-map.md](constraints-map.md)) | Write side, blocking. Home of the SWALLOW ratchet |
 | Review | `sutra_review` | Write side, advisory. Home of the PAR (`sibling_patterns`, sutra/467), orphans (`orphans`, sutra/483) and DUP mechanisms. `behavioral_coupling` lists co-change partners with no static edge |
 | Similarity | HRR vectors (embed, strip), lexical tokens, `sutra_similar` ([similarity-map.md](similarity-map.md)) | Substrate for the DUP mechanism. Strip mode is not a duplicate detector (sutra/484) |
-| Dead code | `sutra_dead` | Substrate for the orphans mechanism (resolution corrected in sutra/477; liveness rules in `db::orphans`, sutra/483) |
-| Git signals | `sutra_cochange`, `sutra_hotspots`, per-symbol cyclomatic/cognitive complexity | Review inputs; hotspots were the one health-era signal that was right on all 4 pilot repos |
+| Dead code | `sutra release-pack` (CLI) | Substrate for the orphans mechanism (resolution corrected in sutra/477; liveness rules in `db::orphans`, sutra/483); whole-repo candidates go to the release pack (sutra/521) |
+| Git signals | review `behavioral_coupling`, `sutra release-pack` (CLI), per-symbol cyclomatic/cognitive complexity | Review inputs; the repo-wide views (refactor targets, uncoupled co-change) moved to the release pack (sutra/521) |
 | Components | Directory-based clustering (no MCP tool since sutra/518) | Boundary constraints and explore ranking |
 | Vocabulary | `.sutra/aliases.toml` | Human terms → code, resolved first by explore |
 | Lessons | `~/.sutra/lessons.db`, `sutra_remember`, `sutra_lessons`, surfaced inline by symbol/impact | Cross-project negative knowledge anchored to code |

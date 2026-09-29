@@ -143,6 +143,20 @@ enum Commands {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Write the release-review code-intel pack as markdown: refactor targets
+    /// (churn × cognitive complexity), dead candidates, import cycles, and
+    /// co-change pairs with no static edge. Each section is bounded and says
+    /// when it was cut. Runs a full parse first so history-derived data is
+    /// current.
+    ReleasePack {
+        /// Markdown output (the only format).
+        #[arg(long)]
+        md: bool,
+        /// Workspace id or path (defaults to the workspace containing the
+        /// current directory).
+        #[arg(long)]
+        workspace: Option<String>,
+    },
     /// Manage constraint ratchets (CLI-only, not exposed via MCP)
     #[command(subcommand)]
     Ratchet(RatchetCmd),
@@ -402,6 +416,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Firings { mechanism, since } => {
             cmd_firings(&config, mechanism.as_deref(), since.as_deref())?;
+        }
+        Commands::ReleasePack { md, workspace } => {
+            cmd_release_pack(&config, md, workspace.as_deref())?;
         }
         Commands::Ratchet(cmd) => {
             cmd_ratchet(&config, cmd)?;
@@ -857,6 +874,37 @@ fn cmd_firings(
         since,
     )?;
     println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+fn cmd_release_pack(
+    config: &Config,
+    md: bool,
+    workspace: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !md {
+        return Err("release-pack writes markdown only; pass --md".into());
+    }
+    let ws_config = load_validated_workspaces(config)?;
+    let ws_ref = match workspace {
+        Some(w) => w.to_string(),
+        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+    };
+    let ws = workspace::resolve_workspace(&ws_config, &ws_ref)?;
+    let db = Db::open_for_workspace(ws, &config.db_dir)?;
+    // Churn, co-change and liveness are derived data the incremental refresh
+    // skips; only a full parse brings them current. Frozen workspaces are
+    // never refreshed.
+    if !ws.frozen {
+        eprintln!("parsing {} before building the release pack…", ws.id);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = sutra::parser::adapter::default_registry();
+        sutra::pipeline::parse_workspace(ws, &db, config, &cancel, &registry)?;
+    }
+    print!(
+        "{}",
+        sutra::tools::release_pack::render_markdown(&db, &ws.id, std::path::Path::new(&ws.root))
+    );
     Ok(())
 }
 

@@ -51,11 +51,8 @@ pub struct WorkspaceToolArgs {
 // ---------------------------------------------------------------------------
 
 use crate::tools::calls::CallsArgs;
-use crate::tools::cochange::CochangeArgs;
-use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
 use crate::tools::explore::ExploreArgs;
-use crate::tools::hotspots::HotspotsArgs;
 use crate::tools::impact::ImpactArgs;
 use crate::tools::lookup::LookupArgs;
 use crate::tools::map::MapArgs;
@@ -65,7 +62,6 @@ use crate::tools::refs::RefsArgs;
 use crate::tools::remember::RememberArgs;
 use crate::tools::review::ReviewArgs;
 use crate::tools::similar::SimilarArgs;
-use crate::tools::winnow::WinnowArgs;
 
 // ---------------------------------------------------------------------------
 // SutraServer
@@ -780,27 +776,6 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Entities that historically change together in git history. \
-        granularity='file' (default): file-level co-change by path. \
-        granularity='function': function-level co-change by qualified symbol name. \
-        Reports both jaccard and confidence metrics for function granularity."
-    )]
-    pub async fn sutra_cochange(
-        &self,
-        Parameters(args): Parameters<CochangeArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::cochange::handle(
-            ctx.db(),
-            &args.path,
-            args.threshold,
-            args.granularity.as_deref(),
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
         description = "Structural review of a diff. Reports what changed per symbol \
         (added / deleted / signature_changed / body_changed, with callee diffs), constraint \
         violations, and the write-side advisories: dup_exists (added code that already \
@@ -829,66 +804,6 @@ impl SutraServer {
             Some(&dd),
         )
         .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "Find dead symbols (zero inbound references) and unreachable files \
-        (zero importers). Automatically excludes #[test]/#[bench] functions, items inside \
-        #[cfg(test)] modules, #[no_mangle]/FFI entrypoints, rmcp #[tool] methods, integration \
-        test files, and trait-impl / @override members. Methods called with dot syntax count \
-        as live by name (no receiver types). Known misses: other framework-registered items \
-        (macro attributes), Cargo package renames, Python hasattr/getattr dispatch."
-    )]
-    pub async fn sutra_dead(
-        &self,
-        Parameters(args): Parameters<DeadArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::dead::handle(
-            ctx.db(),
-            args.path_prefix.as_deref(),
-            args.include_pub.unwrap_or(false),
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(description = "Riskiest files ranked by git churn × blast radius × complexity.")]
-    pub async fn sutra_hotspots(
-        &self,
-        Parameters(args): Parameters<HotspotsArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::hotspots::handle_ctx(&ctx, args.window_days, args.limit)
-            .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "Multi-axis composite query. AND-intersects filters (kind, \
-        min_complexity, min_churn, calls_to, file_glob, name_regex) and ranks results \
-        by importance (PageRank), complexity, or churn. Each result includes per-axis \
-        values."
-    )]
-    pub async fn sutra_winnow(
-        &self,
-        Parameters(args): Parameters<WinnowArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let filter = tools::winnow::WinnowFilter {
-            kind: args.kind,
-            min_complexity: args.min_complexity,
-            min_churn: args.min_churn,
-            churn_window_days: args.churn_window_days,
-            calls_to: args.calls_to,
-            file_glob: args.file_glob,
-            name_regex: args.name_regex,
-            rank_by: args.rank_by,
-            limit: args.limit,
-        };
-        let result = tools::winnow::handle(ctx.db(), ctx.workspace_root(), &filter)
-            .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 

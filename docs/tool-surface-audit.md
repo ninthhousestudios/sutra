@@ -310,6 +310,22 @@ CLI command would do the curation mechanically and write
 That turns 4 MCP tools the agent has to know about into 1 command the skill
 runs.
 
+Landed in sutra/521 (`src/tools/release_pack.rs`), with three departures
+from the sketch above:
+
+- **Churn is per symbol.** It counts the commits in the history window that
+  changed the symbol (entity history, cosmetic-only edits left out). Winnow
+  used the file's churn, which gives every function in a hot file the same
+  score. Test files are left out of the ranking.
+- **Dead candidates include public symbols.** Python and Dart mark nearly
+  every symbol public, so the non-public filter the MCP tool defaulted to
+  showed nothing there. The known-misses list names library exports and
+  conditional-import branches. At most 8 per file, so one constants file
+  can't use up the whole cap.
+- **It writes to stdout.** The skill redirects it into
+  `20-code-intel/SUMMARY.md`. It runs a full parse first, because churn,
+  co-change and liveness are derived data the incremental refresh skips.
+
 ## Fold contract: diff_impact → review
 
 Per the "Refactor contract discipline" rule in `CLAUDE.md`, here is every

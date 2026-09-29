@@ -695,33 +695,6 @@ pub fn churn_from_commit_files(commit_files: &[CommitFile]) -> HashMap<String, u
     counts
 }
 
-/// Count how many commits touched each file in the given time window.
-pub fn git_churn(workspace_root: &Path, window_days: u32) -> Result<HashMap<String, u32>> {
-    let since = format!("{window_days} days ago");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["log", "--format=", "--name-only", "--no-renames", "--since"])
-        .arg(&since)
-        .output()
-        .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SutraError::Internal(format!("git log: {stderr}")));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut counts: HashMap<String, u32> = HashMap::new();
-    for line in stdout.lines() {
-        let line = line.trim();
-        if !line.is_empty() {
-            *counts.entry(line.to_string()).or_insert(0) += 1;
-        }
-    }
-    Ok(counts)
-}
-
 /// Content of `path` on one side of a diff: `Some(rev)` reads the revision
 /// (`Some("")` is the index), `None` reads the worktree. `Ok(None)` when the file
 /// does not exist on that side.

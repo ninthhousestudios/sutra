@@ -116,7 +116,7 @@ Constraints can be **ratcheted** by adding `ratchet = true` — this registers a
 
 ### 5. Health metrics (Layer 4)
 
-Health scores, trend, the biomarkers and the erosion metric were removed (sutra/464; see `docs/health-disposition.md`). Their surviving signals live elsewhere: co-change partners with no static edge surface as `sutra_review`'s `behavioral_coupling`, import cycles are a `rules.toml` constraint, and unreferenced symbols come from `sutra_dead`. A changed function at cognitive complexity ≥ 15 still raises `sutra_diff_impact`'s risk verdict.
+Health scores, trend, the biomarkers and the erosion metric were removed (sutra/464; see `docs/health-disposition.md`). Their surviving signals live elsewhere: co-change partners with no static edge surface as `sutra_review`'s `behavioral_coupling`, import cycles are a `rules.toml` constraint, and unreferenced symbols are `sutra release-pack` dead candidates.
 
 ### 6. Vocabulary mapping (Layer 5)
 
@@ -218,11 +218,7 @@ Lessons carry negative knowledge: "don't do that, here's why." They capture expe
 |---|---|
 | `sutra_refs` | All usages of a symbol across the codebase, grouped by file. Optional `context_kind` filter (call, construction, type_use) |
 | `sutra_calls` | Call hierarchy — callers or callees, BFS to configurable depth |
-| `sutra_cochange` | Files that historically change together with a given file |
-| `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
 | `sutra_review` | Structural review of a diff — per-symbol changes with callee diffs, constraint violations, and the dup_exists / sibling_patterns / orphans / behavioral_coupling advisories |
-| `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
-| `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
 | `sutra_similar` | Find functions similar to a given one — likely duplicates (`mode=dup`, default) or same AST shape (`strip`/`embed`) |
 
 ## Common workflows
@@ -282,10 +278,16 @@ Agent: sutra_remember(cite="01J...", source_tasks=["sutra/180"])
 ### Find code quality issues
 
 ```
-sutra_hotspots()                   → riskiest files (churn × blast radius × complexity)
-sutra_dead()                       → unreferenced symbols and files
 sutra_similar(symbol)              → does this logic already exist elsewhere?
 ```
+
+### Release review (CLI)
+
+```
+sutra release-pack --md [--workspace <id>] > SUMMARY.md
+```
+
+Whole-repo standing state for a release review, as bounded markdown: refactor targets (symbols ranked by churn × cognitive complexity), dead candidates (with the known misses listed), import cycles, and co-change pairs with no static edge. Each section says when it was cut. It runs a full parse first. These signals don't fit a single diff, so they are not MCP tools (`docs/tool-surface-audit.md`).
 
 ## Guard (real-time constraint enforcement)
 

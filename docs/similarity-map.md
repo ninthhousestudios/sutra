@@ -32,8 +32,9 @@ src/tools/review.rs — behavioral_coupling: partners with no static edge, same
 src/parser/
   complexity.rs     — cyclomatic and cognitive (tree-sitter Node + src +
                       lang); classify_cognitive decides flow breaks and
-                      nesting increments. diff_impact and sutra_hotspots read
-                      cognitive; diff_impact owns COGNITIVE_THRESHOLD (15).
+                      nesting increments. map, outline, review's
+                      changed_symbols and the release pack's refactor
+                      targets (churn x cognitive) read it.
   mod.rs            — ExtractedSymbol: cyclomatic, cognitive (Option<u32>),
                       computed for Function/Method kinds in every parser
 

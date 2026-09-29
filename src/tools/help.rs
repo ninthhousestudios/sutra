@@ -124,14 +124,7 @@ sutra_refs/sutra_calls for usages. Optional `kind` filter (function, struct, met
 ```
 sutra_deps(workspace=\"myproject\", path=\"src/main.rs\", depth=2)
 ```
-BFS from a file showing its import graph. Omit `path` for all edges.
-
-## Multi-axis composite query
-```
-sutra_winnow(workspace=\"myproject\", kind=\"function\", min_complexity=10, rank_by=\"complexity\", limit=10)
-```
-AND-intersects filters (kind, min_complexity, min_churn, calls_to, file_glob, name_regex) \
-and ranks results. Great for finding complex hotspots or functions matching multiple criteria.",
+BFS from a file showing its import graph. Omit `path` for all edges.",
     },
     Topic {
         name: "freshness",
@@ -212,10 +205,9 @@ behavioral_coupling advisories, and the changed symbols with their callee diffs.
 sutra_workspace(path=\"/home/user/project\")
 sutra_calls(workspace=\"myproject\", symbol=\"handle_request\", direction=\"callers\", depth=2)
 sutra_refs(workspace=\"myproject\", symbol=\"handle_request\", context_kind=\"call\")
-sutra_winnow(workspace=\"myproject\", calls_to=\"handle_request\", file_glob=\"tests/**\")
 ```
-`sutra_calls` shows the call hierarchy. `sutra_refs` shows all usage sites. \
-`sutra_winnow` with `calls_to` + `file_glob` finds test files that exercise the function.
+`sutra_calls` shows the call hierarchy. `sutra_refs` shows all usage sites; \
+the ones under test paths are the tests that exercise the function.
 
 ## Explain why a result is stale
 ```
