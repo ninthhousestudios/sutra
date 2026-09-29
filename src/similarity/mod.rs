@@ -1,9 +1,7 @@
 pub mod codebook;
 pub mod diff;
-pub mod duplicates;
 pub mod encoder;
 pub mod hrr;
-pub mod minhash;
 pub mod search;
 
 use std::borrow::Borrow;
@@ -98,10 +96,10 @@ pub(crate) fn resolve_similarity_mode(db: &Db) -> Result<(SimilarityMode, Option
     }
 }
 
-pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, bool)> {
+pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
     let changed_files = db.files_needing_hrr_recompute()?;
     if changed_files.is_empty() {
-        return Ok((0, false));
+        return Ok(0);
     }
 
     let mode = effective_similarity_mode(db)?;
@@ -111,7 +109,7 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
         // trigger a real recompute instead of treating stale files as done
         // (sutra/328). The repeated no-op re-entry per parse is the cost of that.
         info!("similarity: HRR disabled (mode=off)");
-        return Ok((0, false));
+        return Ok(0);
     }
     if mode == SimilarityMode::StripOnly && db.has_embed_vectors()? {
         // Embed vectors from before the downgrade would leave `sutra_similar
@@ -136,7 +134,7 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
             .map(|f| (f.file_id, f.content_hash.as_str()))
             .collect();
         db.insert_hrr_vectors_and_hashes(&[], &file_hashes)?;
-        return Ok((0, true));
+        return Ok(0);
     }
 
     let file_id_to_hash: HashMap<i64, &str> = changed_files
@@ -176,7 +174,7 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
         .collect();
     db.insert_hrr_vectors_and_hashes(&vec_refs, &file_hashes)?;
 
-    Ok((symbols.len(), true))
+    Ok(symbols.len())
 }
 
 fn hrr_worker_count(file_count: usize) -> usize {
@@ -328,24 +326,6 @@ pub fn encode_embed_vectors(
         Ok(out)
     })?;
     Ok(per_file.into_iter().flatten().collect())
-}
-
-pub fn compute_pattern_families(db: &Db) -> Result<usize> {
-    let mut families = Vec::new();
-
-    let vectors = db.load_all_vectors_by_mode("strip")?;
-    if !vectors.is_empty() {
-        families.extend(duplicates::find_pattern_families(&vectors, 0.85, 3));
-    }
-
-    let names = db.function_symbol_names()?;
-    if !names.is_empty() {
-        families.extend(duplicates::find_name_families(&names, 0.6, 3));
-    }
-
-    let count = families.len();
-    db.replace_pattern_families(&families)?;
-    Ok(count)
 }
 
 #[cfg(test)]

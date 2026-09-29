@@ -266,7 +266,6 @@ async fn test_unchanged_parse_copies_parse_metrics() {
         total_complexity: 12_345,
         dead_symbol_count: 234,
         hotspot_count: 56,
-        pattern_family_count: 8,
         ..SnapshotParams::default()
     })
     .unwrap();
@@ -280,7 +279,6 @@ async fn test_unchanged_parse_copies_parse_metrics() {
     assert_eq!(latest.total_complexity, 12_345);
     assert_eq!(latest.dead_symbol_count, 234);
     assert_eq!(latest.hotspot_count, 56);
-    assert_eq!(latest.pattern_family_count, 8);
 }
 
 #[tokio::test]

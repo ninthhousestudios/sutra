@@ -58,14 +58,12 @@ src/similarity/
                       thresholds (text_delta: 0.15, hrr_delta: 0.15).
                       Integrated into sutra_review as "hrr_shape_changes"
                       output.
-  duplicates.rs     — find_pattern_families: union-find clustering over
-                      strip vectors. Used by sutra_similar without a symbol.
   search.rs         — find_similar: cosine-similarity ranked search.
                       SimilarityMatch{symbol_id, score}. Self-exclusion,
                       threshold filtering, limit truncation.
   mod.rs            — compute_hrr_vectors (pipeline entry; per-file encoding
                       parallelized via thread::scope + atomic work queue,
-                      SUTRA_HRR_PARALLELISM override), compute_pattern_families.
+                      SUTRA_HRR_PARALLELISM override).
                       SimilarityMode knob: SUTRA_SIMILARITY_MODE =
                       full|strip-only|off|auto (auto downgrades to strip-only
                       above 200k function symbols; strip-only drops embed
@@ -76,8 +74,11 @@ src/tools/
                       Each mode answers a different question (sutra/484):
                       dup (default) "does this already exist?" — delegates
                       to dup_exists::neighbours; embed / strip — linear
-                      scan cosine over the stored HRR vectors. Without a
-                      symbol: strip pattern families + name families.
+                      scan cosine over the stored HRR vectors. symbol is
+                      required: the no-symbol pattern-families mode (and the
+                      parse-time family computation, duplicates.rs and
+                      minhash.rs) was deleted in sutra/519 — same-shape
+                      clusters were noise, not duplicates.
   dup_exists.rs     — Review-time "this already exists" advisory (sutra/469)
                       and the one duplicate scorer. Corpus::build (non-test
                       functions >= 5 lines, tf-idf lexicon, rare 12-token
@@ -102,11 +103,10 @@ src/tools/
                       ranked them 470th and 1258th).
 
 src/db/
-  similarity.rs     — HrrSymbolRow, SymbolSummary, PatternFamily types.
+  similarity.rs     — HrrSymbolRow, SymbolSummary types.
                       Db methods: function_symbols_for_hrr(_files),
                       insert_hrr_vectors_and_hashes, load_hrr_vector (single),
-                      load_all_vectors_by_mode, replace_pattern_families,
-                      query_pattern_families, symbols_by_ids,
+                      load_all_vectors_by_mode, symbols_by_ids,
                       function_symbol_count, delete_embed_vectors.
                       (hrr_codebook table dropped by migration 0064.)
 
@@ -120,9 +120,10 @@ src/pipeline.rs     — post_parse_sequence: history::ingest (churn feeds semant
 ## Database
 
 `snapshots` is the parse record behind `last_parse_time` / `last_parse_info`,
-plus the parse aggregates (total_complexity, dead/hotspot/pattern-family
-counts) a NoChanges parse copies forward. The health tables and columns that
-used to hang off it were dropped in 0081–0086 (sutra/473–475).
+plus the parse aggregates (total_complexity, dead/hotspot counts) a NoChanges
+parse copies forward. The health tables and columns that used to hang off it
+were dropped in 0081–0086 (sutra/473–475); the pattern-family tables and count
+in 0095 (sutra/519).
 
 ## Test locations
 

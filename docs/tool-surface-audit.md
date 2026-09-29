@@ -220,7 +220,10 @@ add nothing that the commit-time check lacks.
 - **similar.** `limit` is ignored in families mode: `limit=5` returned 105
   families (53k chars). The families are same-shape clusters (enum `as_str`
   arms, test fixtures across languages), which the tool description itself
-  says is not a duplicate check.
+  says is not a duplicate check. **Fixed (sutra/519):** `symbol` is required
+  and `min_group` is gone. Nothing else read the stored families (the snapshot
+  count was write-only), so the parse-time computation went too: duplicates.rs,
+  minhash.rs, and the tables and column (migration 0095).
 - **conventions list.** 460 rules (76k chars), almost all tautologies like
   `kind:function → naming:snake_case (1.0)`. The result is too big for the
   tool-result limit.

@@ -16,26 +16,22 @@ use crate::tools::dup_exists::{self, Neighbours};
 pub struct SimilarArgs {
     #[serde(default)]
     pub workspace: String,
-    /// Symbol name to find similar functions for. Omit to find all near-duplicate pattern families.
-    #[serde(default)]
-    pub symbol: Option<String>,
+    /// Function or method to find similar functions for.
+    pub symbol: String,
     /// Similarity mode. "dup" (default): does this logic already exist? Ranks likely duplicates
     /// by identifiers, AST shape and rare shared code runs. "embed": HRR cosine on AST shape plus
     /// identifiers. "strip": same AST shape, identifiers ignored; nearly any two small functions
     /// of similar shape score high, so it is not a duplicate check.
     #[serde(default)]
     pub mode: Option<String>,
-    /// Maximum number of results (default: 10 for symbol mode, all for duplicates mode)
+    /// Maximum number of results (default: 10)
     #[serde(default)]
     pub limit: Option<usize>,
-    /// Minimum similarity threshold 0.0-1.0 (default: 0.3 for symbol mode, 0.85 for duplicates mode).
+    /// Minimum similarity threshold 0.0-1.0 (default: 0.3).
     /// In dup mode it filters only the matches that are not likely_duplicate: those are always
     /// returned, even below it, since a rare shared code run fires on its own.
     #[serde(default)]
     pub threshold: Option<f64>,
-    /// Minimum group size for duplicate detection (default: 3). Only used when symbol is omitted.
-    #[serde(default)]
-    pub min_group: Option<usize>,
 }
 
 pub fn handle(
@@ -44,30 +40,8 @@ pub fn handle(
     registry: &LanguageRegistry,
     args: &SimilarArgs,
 ) -> Result<serde_json::Value> {
-    match args.symbol.as_deref() {
-        Some(sym) => handle_similar(
-            db,
-            workspace_root,
-            registry,
-            sym,
-            args.mode.as_deref(),
-            args.limit,
-            args.threshold,
-        ),
-        None => handle_duplicates(db, args.threshold, args.min_group),
-    }
-}
-
-fn handle_similar(
-    db: &Db,
-    workspace_root: &Path,
-    registry: &LanguageRegistry,
-    symbol: &str,
-    mode: Option<&str>,
-    limit: Option<usize>,
-    threshold: Option<f64>,
-) -> Result<serde_json::Value> {
-    let mode = mode.unwrap_or("dup");
+    let symbol = args.symbol.as_str();
+    let mode = args.mode.as_deref().unwrap_or("dup");
     if !matches!(mode, "dup" | "embed" | "strip") {
         return Err(SutraError::InvalidArgument {
             tool: "sutra_similar",
@@ -79,8 +53,8 @@ fn handle_similar(
                 .to_string(),
         });
     }
-    let limit = limit.unwrap_or(10);
-    let threshold = threshold.unwrap_or(0.3);
+    let limit = args.limit.unwrap_or(10);
+    let threshold = args.threshold.unwrap_or(0.3);
 
     let sym = match db.resolve_symbol_diagnostic(symbol, None)? {
         ResolveResult::Unique(s) => s,
@@ -234,79 +208,4 @@ fn neighbours_json(n: &Neighbours, threshold: f64, limit: usize) -> serde_json::
         out["incomplete"] = json!(n.incomplete);
     }
     out
-}
-
-fn handle_duplicates(
-    db: &Db,
-    threshold: Option<f64>,
-    min_group: Option<usize>,
-) -> Result<serde_json::Value> {
-    let threshold = threshold.unwrap_or(0.85);
-    let min_group = min_group.unwrap_or(3);
-
-    let mut families = Vec::new();
-
-    let vectors = db.load_all_vectors_by_mode("strip")?;
-    if !vectors.is_empty() {
-        families.extend(crate::similarity::duplicates::find_pattern_families(
-            &vectors, threshold, min_group,
-        ));
-    }
-
-    let names = db.function_symbol_names()?;
-    if !names.is_empty() {
-        families.extend(crate::similarity::duplicates::find_name_families(
-            &names, threshold, min_group,
-        ));
-    }
-
-    if families.is_empty() {
-        return Ok(json!({
-            "families": [],
-            "total": 0,
-            "threshold": threshold,
-            "min_group": min_group,
-        }));
-    }
-
-    let sym_ids: Vec<i64> = families
-        .iter()
-        .flat_map(|f| &f.member_symbol_ids)
-        .copied()
-        .collect();
-    let sym_meta = db.symbols_by_ids(&sym_ids)?;
-
-    let family_json: Vec<serde_json::Value> = families
-        .iter()
-        .enumerate()
-        .map(|(i, fam)| {
-            let members: Vec<serde_json::Value> = fam
-                .member_symbol_ids
-                .iter()
-                .filter_map(|&sid| {
-                    sym_meta.iter().find(|s| s.id == sid).map(|s| {
-                        json!({
-                            "symbol": &s.qualified_name,
-                            "file": &s.file_path,
-                            "lines": format!("{}-{}", s.start_line, s.end_line),
-                        })
-                    })
-                })
-                .collect();
-            json!({
-                "family_id": i + 1,
-                "detection": fam.detection_mode,
-                "member_count": fam.member_symbol_ids.len(),
-                "avg_similarity": (fam.avg_similarity * 1000.0).round() / 1000.0,
-                "members": members,
-            })
-        })
-        .collect();
-
-    Ok(json!({
-        "families": family_json,
-        "total": families.len(),
-        "threshold": threshold,
-        "min_group": min_group,
-    }))
 }

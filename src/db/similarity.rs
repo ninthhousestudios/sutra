@@ -5,12 +5,6 @@ use super::Db;
 use crate::error::Result;
 use crate::similarity::hrr::HrrVec;
 
-pub struct PatternFamily {
-    pub member_symbol_ids: Vec<i64>,
-    pub avg_similarity: f64,
-    pub detection_mode: &'static str,
-}
-
 pub struct SymbolSummary {
     pub id: i64,
     pub qualified_name: String,
@@ -129,20 +123,6 @@ impl Db {
         Ok(deleted)
     }
 
-    pub fn function_symbol_names(&self) -> Result<Vec<(i64, String)>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT s.id, s.qualified_name
-             FROM symbols s
-             WHERE s.kind IN ('function', 'method')
-             ORDER BY s.id",
-        )?;
-        let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
     pub fn function_symbols_for_hrr_files(&self, file_ids: &[i64]) -> Result<Vec<HrrSymbolRow>> {
         if file_ids.is_empty() {
             return Ok(Vec::new());
@@ -239,50 +219,6 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
-    }
-
-    pub fn replace_pattern_families(&self, families: &[PatternFamily]) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute_batch("BEGIN")?;
-
-        let result = (|| {
-            conn.execute("DELETE FROM pattern_family_members", [])?;
-            conn.execute("DELETE FROM pattern_families", [])?;
-
-            let mut fam_stmt = conn.prepare(
-                "INSERT INTO pattern_families (member_count, avg_similarity, detection_mode) VALUES (?1, ?2, ?3)",
-            )?;
-            let mut mem_stmt = conn.prepare(
-                "INSERT INTO pattern_family_members (family_id, symbol_id) VALUES (?1, ?2)",
-            )?;
-
-            for family in families {
-                fam_stmt.execute(params![
-                    family.member_symbol_ids.len() as i64,
-                    family.avg_similarity,
-                    family.detection_mode,
-                ])?;
-                let family_id = conn.last_insert_rowid();
-                for &sym_id in &family.member_symbol_ids {
-                    mem_stmt.execute(params![family_id, sym_id])?;
-                }
-            }
-            Ok(())
-        })();
-
-        if result.is_ok() {
-            conn.execute_batch("COMMIT")?;
-        } else {
-            let _ = conn.execute_batch("ROLLBACK");
-        }
-        result
-    }
-
-    pub fn pattern_family_count(&self) -> Result<i64> {
-        let conn = self.conn.lock();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM pattern_families", [], |r| r.get(0))?;
-        Ok(count)
     }
 
     pub fn symbols_by_ids(&self, ids: &[i64]) -> Result<Vec<SymbolSummary>> {

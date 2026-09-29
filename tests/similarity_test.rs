@@ -67,18 +67,17 @@ fn parse(f: &Fixture) {
 
 fn similar(
     f: &Fixture,
-    symbol: Option<&str>,
+    symbol: &str,
     mode: Option<&str>,
     limit: Option<usize>,
     threshold: Option<f64>,
 ) -> serde_json::Value {
     let args = sutra::tools::similar::SimilarArgs {
         workspace: String::new(),
-        symbol: symbol.map(str::to_string),
+        symbol: symbol.to_string(),
         mode: mode.map(str::to_string),
         limit,
         threshold,
-        min_group: None,
     };
     sutra::tools::similar::handle(&f.db, &f.ws.root, &default_registry(), &args).unwrap()
 }
@@ -278,7 +277,7 @@ fn similar_search_strip_mode() {
     )]);
     parse(&f);
 
-    let result = similar(&f, Some("alpha"), Some("strip"), Some(10), Some(0.0));
+    let result = similar(&f, "alpha", Some("strip"), Some(10), Some(0.0));
     let matches = result["matches"].as_array().unwrap();
     assert!(
         !matches.is_empty(),
@@ -306,8 +305,8 @@ fn similar_search_embed_mode_lower_than_strip() {
     )]);
     parse(&f);
 
-    let strip_result = similar(&f, Some("alpha"), Some("strip"), Some(10), Some(0.0));
-    let embed_result = similar(&f, Some("alpha"), Some("embed"), Some(10), Some(0.0));
+    let strip_result = similar(&f, "alpha", Some("strip"), Some(10), Some(0.0));
+    let embed_result = similar(&f, "alpha", Some("embed"), Some(10), Some(0.0));
 
     let strip_sim = strip_result["matches"][0]["similarity"].as_f64().unwrap();
     let embed_sim = embed_result["matches"][0]["similarity"].as_f64().unwrap();
@@ -324,7 +323,7 @@ fn similar_search_excludes_self() {
     let f = setup(&[("src/lib.rs", "pub fn only_one(x: i32) -> i32 { x + 1 }\n")]);
     parse(&f);
 
-    let result = similar(&f, Some("only_one"), Some("strip"), Some(10), Some(0.0));
+    let result = similar(&f, "only_one", Some("strip"), Some(10), Some(0.0));
     let matches = result["matches"].as_array().unwrap();
     assert!(
         matches.is_empty(),
@@ -337,7 +336,7 @@ fn similar_search_unknown_symbol() {
     let f = setup(&[("src/lib.rs", "pub fn exists() {}\n")]);
     parse(&f);
 
-    let result = similar(&f, Some("does_not_exist"), Some("strip"), None, None);
+    let result = similar(&f, "does_not_exist", Some("strip"), None, None);
     assert!(
         result.get("diagnostic").is_some(),
         "unknown symbol should return a diagnostic"
@@ -355,7 +354,7 @@ fn similar_search_non_function_symbol() {
     )]);
     parse(&f);
 
-    let result = similar(&f, Some("MyStruct"), Some("strip"), None, None);
+    let result = similar(&f, "MyStruct", Some("strip"), None, None);
     assert!(
         result.get("diagnostic").is_some(),
         "struct symbol should return a diagnostic about function-only search"
@@ -376,7 +375,7 @@ fn operator_discrimination() {
 
     let _vecs = load_vectors(&f.db);
     // Use sutra_similar to find matches for "add" — sub and mul should not be ~1.0
-    let result = similar(&f, Some("add"), Some("strip"), Some(10), Some(0.0));
+    let result = similar(&f, "add", Some("strip"), Some(10), Some(0.0));
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty(), "should find matches for add");
 
@@ -406,10 +405,8 @@ fn no_change_recompute_is_noop() {
         "initial parse should produce 4 vectors"
     );
 
-    let (count, changed) =
-        sutra::similarity::compute_hrr_vectors(&f.db, f.ws.root.as_path()).unwrap();
+    let count = sutra::similarity::compute_hrr_vectors(&f.db, f.ws.root.as_path()).unwrap();
     assert_eq!(count, 0, "no-change recompute should process zero symbols");
-    assert!(!changed, "no-change recompute should report no change");
 
     let vecs_after = load_vectors(&f.db);
     assert_eq!(vecs_before.len(), vecs_after.len());
@@ -492,77 +489,6 @@ fn single_file_change_recomputes_only_that_file() {
             .len()
             == 1024,
         "changed file should have new vectors"
-    );
-}
-
-#[test]
-fn pattern_families_deterministic_across_full_recompute() {
-    // Three structurally identical functions (one family) plus an unrelated
-    // shape, spread across files so file iteration order matters. A reindex +
-    // reparse recomputes vectors and families from scratch with fresh HashMap
-    // seeds — family membership must not wobble (sutra/327).
-    let files: &[(&str, &str)] = &[
-        (
-            "src/a.rs",
-            "pub fn clone_a(x: i32, y: i32) -> i32 { x + y }\n",
-        ),
-        (
-            "src/b.rs",
-            "pub fn clone_b(p: i32, q: i32) -> i32 { p + q }\n",
-        ),
-        (
-            "src/c.rs",
-            "pub fn clone_c(m: i32, n: i32) -> i32 { m + n }\n",
-        ),
-        (
-            "src/d.rs",
-            "pub fn other(x: i32) -> i32 { if x > 0 { x * 2 } else { x - 1 } }\n",
-        ),
-    ];
-    let f = setup(files);
-    parse(&f);
-
-    let load_families = |db: &Db| -> Vec<Vec<String>> {
-        let conn = db.conn_for_test();
-        let mut stmt = conn
-            .prepare(
-                "SELECT pfm.family_id, s.qualified_name
-                 FROM pattern_family_members pfm
-                 JOIN symbols s ON s.id = pfm.symbol_id
-                 ORDER BY pfm.family_id, s.qualified_name",
-            )
-            .unwrap();
-        let rows: Vec<(i64, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        let mut families: Vec<Vec<String>> = Vec::new();
-        let mut last_id = None;
-        for (fid, name) in rows {
-            if last_id != Some(fid) {
-                families.push(Vec::new());
-                last_id = Some(fid);
-            }
-            families.last_mut().unwrap().push(name);
-        }
-        families.sort();
-        families
-    };
-
-    let families1 = load_families(&f.db);
-    assert!(
-        families1.iter().any(|fam| fam.len() >= 3),
-        "expected the three structural clones to form a family, got {families1:?}"
-    );
-
-    f.db.reindex().unwrap();
-    parse(&f);
-    let families2 = load_families(&f.db);
-
-    assert_eq!(
-        families1, families2,
-        "pattern families changed across identical recomputes"
     );
 }
 
@@ -723,7 +649,7 @@ fn default_mode_ranks_the_copy_above_a_same_shape_function() {
     )]);
     parse(&f);
 
-    let result = similar(&f, Some("active_waivers"), None, Some(10), Some(0.0));
+    let result = similar(&f, "active_waivers", None, Some(10), Some(0.0));
     assert_eq!(result["mode"], "dup");
     let matches = result["matches"].as_array().unwrap();
     assert_eq!(matches[0]["symbol"], "load_waivers", "{result}");
@@ -760,7 +686,7 @@ fn dup_mode_keeps_a_block_match_below_the_threshold() {
     )]);
     parse(&f);
 
-    let result = similar(&f, Some("draw_chart"), None, Some(10), Some(0.99));
+    let result = similar(&f, "draw_chart", None, Some(10), Some(0.99));
     let matches = result["matches"].as_array().unwrap();
     let ledger = matches
         .iter()
@@ -798,7 +724,7 @@ fn dup_mode_marks_nothing_for_a_query_the_review_skips() {
     parse(&f);
 
     for query in ["count_waivers", "loads_waivers"] {
-        let result = similar(&f, Some(query), None, Some(10), Some(0.0));
+        let result = similar(&f, query, None, Some(10), Some(0.0));
         let m = result["matches"]
             .as_array()
             .unwrap()

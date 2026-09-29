@@ -147,7 +147,7 @@ and deliberately skips the expensive derived tiers. The split is the contract:
 | PageRank | | ✅ |
 | file rollups (fan_in, blast_radius) | | ✅ |
 | components + semantic anchors | | ✅ |
-| HRR vectors + pattern families | | ✅ |
+| HRR vectors | | ✅ |
 | cochange / commit_files | | ✅ |
 | health findings | | ✅ |
 | conventions, ratcheted constraints | | ✅ |
@@ -187,7 +187,7 @@ incremental reparse, orphaning `commit_files` and derived evidence.
 | inbound `imports.resolved_file_id` (other files → this file) | resolution | **kept** — path identity is stable, so the edge stays correct |
 | `component_membership` | global partition | **preserved** — freshness is the clustering gate's edge-drift threshold (sutra/439) |
 | `hrr_file_hashes` | derived | invalidated (delete by `file_id`) |
-| `hrr_vectors`, `pattern_family_members` | derived | invalidated (cascade off the `symbols` delete) |
+| `hrr_vectors` | derived | invalidated (cascade off the `symbols` delete) |
 | `commit_files` | raw history | **preserved** — never touched by a content edit |
 
 Preserving the id must never let stale derived rows claim they reflect the new

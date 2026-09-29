@@ -626,7 +626,6 @@ fn test_snapshot_with_aggregates() {
         total_complexity: 42,
         dead_symbol_count: 5,
         hotspot_count: 3,
-        pattern_family_count: 4,
         ..Default::default()
     })
     .unwrap();
@@ -639,7 +638,6 @@ fn test_snapshot_with_aggregates() {
     assert_eq!(s.total_complexity, 42);
     assert_eq!(s.dead_symbol_count, 5);
     assert_eq!(s.hotspot_count, 3);
-    assert_eq!(s.pattern_family_count, 4);
 }
 
 #[test]

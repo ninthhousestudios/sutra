@@ -22,7 +22,7 @@ pub(crate) use constraints::{
     accepted_sync_marker_from_conn, active_ratchets_from_conn, constraint_waivers_from_conn,
 };
 pub(crate) use graph::file_importers_from_conn;
-pub use similarity::{CorpusFunction, HrrSymbolRow, PatternFamily, SymbolSummary};
+pub use similarity::{CorpusFunction, HrrSymbolRow, SymbolSummary};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -213,16 +213,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "hrr_file_hashes",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "pattern_families",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "pattern_family_members",
         partition: TablePartition::Ephemeral,
         is_virtual: false,
     },
@@ -472,7 +462,6 @@ pub struct SnapshotRow {
     pub total_complexity: i64,
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
-    pub pattern_family_count: i64,
 }
 
 pub struct CommitRow {
@@ -494,7 +483,6 @@ pub struct SnapshotParams {
     pub total_complexity: i64,
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
-    pub pattern_family_count: i64,
     pub head_commit: Option<String>,
     /// Pre-parse timestamp for freshness watermark. When set, used instead
     /// of insert-time so edits during parsing aren't hidden.
@@ -962,9 +950,8 @@ impl Db {
             // Child-table lifecycle audit (every table FK'd to files/symbols):
             //   REPLACE (extraction):  symbols, refs (outgoing), imports,
             //                          string_literals, symbols_fts.
-            //   INVALIDATE (derived):  hrr_file_hashes, plus hrr_vectors and
-            //                          pattern_family_members (cascade off the
-            //                          symbols delete).
+            //   INVALIDATE (derived):  hrr_file_hashes, plus hrr_vectors
+            //                          (cascade off the symbols delete).
             //   PRESERVE (raw/history): commit_files.
             //   PRESERVE (global partition): component_membership. It groups
             //                          stable file ids by the whole graph; its
@@ -1024,7 +1011,7 @@ impl Db {
             }
 
             // Replace extraction children. Deleting the symbols cascades their
-            // dependent derived rows (hrr_vectors, pattern_family_members).
+            // dependent derived rows (hrr_vectors).
             // Refs and imports are keyed by file_id and replaced directly.
             conn.execute("DELETE FROM symbols WHERE file_id = ?1", params![old_id])?;
             conn.execute("DELETE FROM refs WHERE file_id = ?1", params![old_id])?;
@@ -2332,8 +2319,8 @@ impl Db {
                 "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
                                         refs_extracted, parse_errors, duration_ms,
                                         total_complexity, dead_symbol_count,
-                                        hotspot_count, pattern_family_count, head_commit)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                        hotspot_count, head_commit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     ts,
                     p.files_parsed,
@@ -2344,7 +2331,6 @@ impl Db {
                     p.total_complexity,
                     p.dead_symbol_count,
                     p.hotspot_count,
-                    p.pattern_family_count,
                     p.head_commit,
                 ],
             )?;
@@ -2434,7 +2420,7 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, pattern_family_count
+                    hotspot_count
              FROM snapshots ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let rows = stmt
@@ -2542,6 +2528,5 @@ fn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {
         total_complexity: row.get(7)?,
         dead_symbol_count: row.get(8)?,
         hotspot_count: row.get(9)?,
-        pattern_family_count: row.get(10)?,
     })
 }

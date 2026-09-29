@@ -1207,7 +1207,7 @@ fn post_parse_sequence(
         log_phase_rss("post_parse:aliases_done");
 
         info!("similarity: computing HRR vectors");
-        let (hrr_count, hrr_changed) = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
+        let hrr_count = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
         info!(count = hrr_count, "similarity: HRR vectors done");
         log_phase_rss("post_parse:hrr_done");
 
@@ -1217,13 +1217,6 @@ fn post_parse_sequence(
             crate::constraints::register_ratcheted_constraints(db, &all_constraints)?;
         if ratchet_count > 0 {
             info!(count = ratchet_count, "registered ratcheted constraints");
-        }
-
-        if hrr_changed {
-            info!("similarity: detecting pattern families");
-            let family_count = crate::similarity::compute_pattern_families(db)?;
-            info!(count = family_count, "similarity: pattern families done");
-            log_phase_rss("post_parse:pattern_families_done");
         }
     }
 
@@ -1246,7 +1239,6 @@ struct ParseAggregates {
     total_complexity: i64,
     dead_symbol_count: i64,
     hotspot_count: i64,
-    pattern_family_count: i64,
 }
 
 fn record_snapshot(db: &Db, meta: CheckpointMeta) -> Result<()> {
@@ -1262,7 +1254,6 @@ fn record_unchanged_snapshot(db: &Db, meta: CheckpointMeta) -> Result<()> {
             total_complexity: previous.total_complexity,
             dead_symbol_count: previous.dead_symbol_count,
             hotspot_count: previous.hotspot_count,
-            pattern_family_count: previous.pattern_family_count,
         },
         None => compute_parse_aggregates(db)?,
     };
@@ -1279,7 +1270,6 @@ fn write_checkpoint(db: &Db, meta: CheckpointMeta, aggregates: ParseAggregates) 
         total_complexity: aggregates.total_complexity,
         dead_symbol_count: aggregates.dead_symbol_count,
         hotspot_count: aggregates.hotspot_count,
-        pattern_family_count: aggregates.pattern_family_count,
         head_commit: meta.head_commit,
         timestamp: meta.timestamp,
     })?;
@@ -1354,7 +1344,6 @@ fn compute_parse_aggregates(db: &Db) -> Result<ParseAggregates> {
         total_complexity,
         dead_symbol_count,
         hotspot_count,
-        pattern_family_count: db.pattern_family_count()?,
     })
 }
 

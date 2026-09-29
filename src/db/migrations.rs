@@ -578,6 +578,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0094_drop_fca_conventions.sql"),
         true,
     ),
+    // Drop pattern families and the snapshot family count (sutra/519): the last
+    // reader, sutra_similar's no-symbol mode, is gone. ephemeral_only: reindex
+    // recreates them through 0031/0032/0057, so the drop must replay after.
+    (
+        "0095_drop_pattern_families",
+        include_str!("../../migrations/0095_drop_pattern_families.sql"),
+        true,
+    ),
 ];
 
 impl Db {

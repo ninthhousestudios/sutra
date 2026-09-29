@@ -179,7 +179,7 @@ Holographic Reduced Representations (HRR) encode each function's AST into a 1024
 - **strip** — structure only, identifiers removed. Finds copy-paste variants regardless of naming.
 - **embed** — structure + identifiers. Finds semantically similar code.
 
-This powers duplicate detection (pattern families of 3+ structurally identical functions) and semantic diff in review (classifying changes as safe-refactor vs. subtle-behavioral-change based on HRR delta vs. text delta).
+This powers similarity search (`sutra_similar`) and semantic diff in review (classifying changes as safe-refactor vs. subtle-behavioral-change based on HRR delta vs. text delta).
 
 ### 8. Code-anchored lessons (Layer 7)
 
@@ -223,7 +223,7 @@ Lessons carry negative knowledge: "don't do that, here's why." They capture expe
 | `sutra_review` | Structural review of a diff — per-symbol changes with callee diffs, constraint violations, and the dup_exists / sibling_patterns / orphans / behavioral_coupling advisories |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
-| `sutra_similar` | Find structurally similar functions (with symbol) or near-duplicate pattern families (without symbol) |
+| `sutra_similar` | Find functions similar to a given one — likely duplicates (`mode=dup`, default) or same AST shape (`strip`/`embed`) |
 
 ## Common workflows
 
@@ -284,7 +284,7 @@ Agent: sutra_remember(cite="01J...", source_tasks=["sutra/180"])
 ```
 sutra_hotspots()                   → riskiest files (churn × blast radius × complexity)
 sutra_dead()                       → unreferenced symbols and files
-sutra_similar()                    → near-duplicate function families
+sutra_similar(symbol)              → does this logic already exist elsewhere?
 ```
 
 ## Guard (real-time constraint enforcement)
