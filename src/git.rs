@@ -410,55 +410,6 @@ pub fn git_merge_base(workspace_root: &Path, branch: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub struct CommitEntry {
-    pub hash: String,
-    pub timestamp: i64,
-    pub author: String,
-    pub subject: String,
-}
-
-pub fn git_list_commits(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<CommitEntry>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args([
-            "log",
-            "--first-parent",
-            "--no-merges",
-            "--reverse",
-            "--format=%H %at %ae %s",
-            "--end-of-options",
-        ])
-        .arg(format!("{base}..{head}"))
-        .output()
-        .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SutraError::Internal(format!("git log: {stderr}")));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut results = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = line.splitn(4, ' ').collect();
-        if parts.len() == 4 {
-            results.push(CommitEntry {
-                hash: parts[0].to_string(),
-                timestamp: parts[1].parse().unwrap_or(0),
-                author: parts[2].to_string(),
-                subject: parts[3].to_string(),
-            });
-        }
-    }
-
-    Ok(results)
-}
-
 /// Outcome of probing whether `workspace_root` is a git repository. The three
 /// states are deliberately distinct (sutra/417): only a *positively confirmed*
 /// non-repository may clear ingested history. A missing git executable, a

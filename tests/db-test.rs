@@ -526,24 +526,6 @@ fn test_symbol_graph_cache_invalidates_after_ref_resolution() {
     );
 }
 
-#[test]
-fn test_find_files_referencing_symbols() {
-    let (_dir, db) = setup_db();
-    let fa = seed_file(&db, "a.rs");
-    let fb = seed_file(&db, "b.rs");
-    let fc = seed_file(&db, "c.rs");
-    let sid = seed_symbol(&db, fc, "c::foo", "foo", "function");
-
-    db.insert_ref(fa, Some(sid), None, 1, 0, "call").unwrap();
-    db.insert_ref(fb, Some(sid), None, 2, 0, "call").unwrap();
-
-    let mut referencing = db.find_files_referencing_symbols(&[sid]).unwrap();
-    referencing.sort();
-    let mut expected = vec![fa, fb];
-    expected.sort();
-    assert_eq!(referencing, expected);
-}
-
 // ---------------------------------------------------------------------------
 // Import operations
 // ---------------------------------------------------------------------------

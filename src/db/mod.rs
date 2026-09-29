@@ -2106,34 +2106,6 @@ impl Db {
         Ok(())
     }
 
-    /// Return the distinct set of file_ids that contain a reference to any of
-    /// the given symbol_ids.
-    pub fn find_files_referencing_symbols(&self, symbol_ids: &[i64]) -> Result<Vec<i64>> {
-        if symbol_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Build a parameterised IN clause at runtime.
-        let placeholders: String = symbol_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let sql =
-            format!("SELECT DISTINCT file_id FROM refs WHERE target_symbol_id IN ({placeholders})");
-
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(&sql)?;
-        let ids: rusqlite::Result<Vec<i64>> = stmt
-            .query_map(rusqlite::params_from_iter(symbol_ids.iter()), |row| {
-                row.get(0)
-            })?
-            .collect();
-        Ok(ids?)
-    }
-
     // -----------------------------------------------------------------------
     // imports
     // -----------------------------------------------------------------------

@@ -67,11 +67,7 @@ sutra_workspace(path=\"/home/user/project\", action=\"reparse\")
 ```
 Re-registers and triggers a synchronous reparse. Use after major changes (branch switch, rebase).
 
-## Check health
-```
-sutra_health()
-```
-Returns per-workspace file counts, symbol counts, parse errors, and staleness.",
+`sutra health` on the CLI lists every registered workspace with file counts and last parse.",
     },
     Topic {
         name: "review",
@@ -192,9 +188,9 @@ to `sutra_workspace` to index other languages.
 
 ## Parse errors
 ```
-sutra_health()
+sutra_workspace(path=\"/absolute/path/to/project\")
 ```
-Shows per-workspace parse error counts. If errors are high, check that source \
+Returns the workspace's parse error count. If errors are high, check that source \
 files are syntactically valid.",
     },
     Topic {
@@ -241,20 +237,16 @@ checked against your staged changes.
 ## Review a branch commit-by-commit
 ```
 sutra_workspace(path=\"/home/user/project\")
-sutra_commit_manifest(workspace=\"myproject\")
+sutra_review(workspace=\"myproject\", diff=\"<sha>~1..<sha>\")
 ```
-Returns per-commit entries with changed files and symbol-level change classifications \
-(added/deleted/signature_changed/body_changed). Useful for understanding why a branch \
-was split into separate commits. Pass `base` and `head` for a custom range.
+Run once per commit. Each call returns that commit's symbol-level changes \
+(added/deleted/signature_changed/body_changed) and advisories.
 
 ## Trace a path between two symbols
 ```
-sutra_workspace(path=\"/home/user/project\")
-sutra_trace(workspace=\"myproject\", symbol=\"target_function\", direction=\"forward\")
+sutra_calls(workspace=\"myproject\", symbol=\"target_function\", direction=\"callers\", depth=3)
 ```
-`direction=forward` traces from entry points to the symbol. \
-`direction=backward` traces from the symbol to leaf functions. \
-Use this to understand how control flows through the codebase.",
+Walks callers up to three levels. Use `direction=\"callees\"` to walk the other way.",
     },
 ];
 

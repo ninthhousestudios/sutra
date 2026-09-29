@@ -11,9 +11,7 @@ use crate::db::{Db, FileRow};
 use crate::error::{Result, SutraError};
 use crate::graph::GraphData;
 
-pub use anchors::{
-    ANCHOR_KINDS, anchor_count, compute_semantic_anchors, concept_density, extract_stems,
-};
+pub use anchors::{ANCHOR_KINDS, anchor_count, compute_semantic_anchors};
 pub(crate) use clustering::is_test_file;
 
 const DEFAULT_STALENESS_THRESHOLD: f64 = 0.10;

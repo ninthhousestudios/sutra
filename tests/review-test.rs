@@ -1755,7 +1755,6 @@ fn option_like_diff_spec_is_rejected_and_writes_nothing() {
     // The shared git sinks other tools call directly must not read it as an
     // option either.
     assert!(sutra::git::git_diff_files(root, &opt, "HEAD").is_err());
-    assert!(sutra::git::git_list_commits(root, &opt, "HEAD").is_err());
     let _ = sutra::git::git_file_content_at(root, &opt, "a.rs");
     let _ = sutra::git::git_diff_hunks(root, &opt, Some("HEAD"));
     assert!(

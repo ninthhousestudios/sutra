@@ -27,9 +27,6 @@ use crate::workspace::{self, WorkspacesConfig};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct EmptyArgs {}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 pub struct HelpArgs {
     /// Topic name (omit for topic list)
     #[serde(default)]
@@ -55,26 +52,19 @@ pub struct WorkspaceToolArgs {
 
 use crate::tools::calls::CallsArgs;
 use crate::tools::cochange::CochangeArgs;
-use crate::tools::commit_manifest::CommitManifestArgs;
-use crate::tools::components::ComponentsArgs;
-use crate::tools::context::ContextArgs;
 use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
-use crate::tools::diff_impact::DiffImpactArgs;
 use crate::tools::explore::ExploreArgs;
 use crate::tools::hotspots::HotspotsArgs;
 use crate::tools::impact::ImpactArgs;
 use crate::tools::lookup::LookupArgs;
 use crate::tools::map::MapArgs;
 use crate::tools::outline::OutlineArgs;
-use crate::tools::pr_risk::PrRiskArgs;
-use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
 use crate::tools::refs::RefsArgs;
 use crate::tools::remember::RememberArgs;
 use crate::tools::review::ReviewArgs;
 use crate::tools::similar::SimilarArgs;
-use crate::tools::trace::TraceArgs;
 use crate::tools::winnow::WinnowArgs;
 
 // ---------------------------------------------------------------------------
@@ -458,15 +448,6 @@ impl SutraServer {
         val
     }
 
-    async fn await_parse(&self, ws_id: &str) {
-        // Best-effort wait, not a correctness gate: `canonical_ws_id` degrades an
-        // unresolvable empty arg (no session default) to a "" lock key rather than
-        // erroring like `hold_parse_lock`. Harmless — the request's `get_db` errors
-        // out regardless, so the "" lock is acquired and dropped for nothing.
-        let lock = self.parse_coord.lock_for(&self.canonical_ws_id(ws_id));
-        let _guard = lock.lock().await;
-    }
-
     /// Acquire the per-workspace parse lock and *hold* it across a DD-backed
     /// evaluation. A reparse remints file ids and commits per file; if it lands
     /// between the `all_files()` read (→ path_map) and the `import_edges()` read
@@ -512,22 +493,6 @@ impl SutraServer {
 
 #[tool_router(router = tool_router)]
 impl SutraServer {
-    #[tool(description = "Health check across all registered workspaces. \
-        Returns per-workspace file/symbol counts, parse errors, and staleness.")]
-    pub async fn sutra_health(
-        &self,
-        #[allow(unused_variables)] Parameters(_args): Parameters<EmptyArgs>,
-    ) -> Result<String, ErrorData> {
-        let result = tools::health::handle(
-            &self.workspaces.read().workspace,
-            &self.db_cache,
-            &self.config,
-            &self.parse_coord,
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(result)
-    }
-
     #[tool(description = "Agent-oriented help and recipes for sutra workflows. \
         Call with no args for a topic list. Call with topic (e.g. \"quickstart\", \
         \"review\", \"recipes\") for focused guidance with concrete tool invocation examples.")]
@@ -570,30 +535,6 @@ impl SutraServer {
         let ctx = self.tool_context(&args.workspace).await?;
         let detail = tools::outline::OutlineDetail::from_flags(args.compact, args.verbose);
         let result = tools::outline::handle(ctx.db(), &args.path, detail).map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "List discovered architectural components. Compact mode (default) returns name, file_count, top 3 anchors, and concept_density. Pass compact=false for full detail with UUIDs, complete file lists, and anchor rationale."
-    )]
-    pub async fn sutra_components(
-        &self,
-        Parameters(args): Parameters<ComponentsArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let compact = args.compact.unwrap_or(true);
-        let result = tools::components::handle(ctx.db(), compact).map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(description = "List discovered conventions. \
-        Actions: list (all conventions).")]
-    pub async fn sutra_conventions(
-        &self,
-        Parameters(args): Parameters<tools::conventions::ConventionsArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::conventions::handle(ctx.db(), &args).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 
@@ -702,31 +643,6 @@ impl SutraServer {
             args.full.unwrap_or(false),
             ctx.is_stale(),
             args.imports.unwrap_or(true),
-            Some(&self.lessons_db),
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(description = "Token-budgeted context packing for a symbol. \
-        Packs the target symbol + dependencies + dependents within a token budget, \
-        with graceful degradation: full body → head-truncated → signature → omitted. \
-        Priority cascade: target > direct deps > direct dependents > transitive deps > \
-        transitive dependents. Neighbors sorted by edge weight (call > field_access > \
-        type_use > import > reference) then pagerank. Tests tallied, not packed. \
-        Returns context array with role/content/tokens per entry, plus omitted counts.")]
-    pub async fn sutra_context(
-        &self,
-        Parameters(args): Parameters<ContextArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::context::handle(
-            ctx.db(),
-            ctx.workspace_root(),
-            &args.symbol,
-            args.token_budget,
-            args.depth,
-            ctx.is_stale(),
             Some(&self.lessons_db),
         )
         .map_err(sutra_to_rmcp)?;
@@ -860,102 +776,6 @@ impl SutraServer {
             args.depth,
         )
         .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(description = "Trace call chains through the codebase. \
-        direction=forward (default): finds paths from entry points to the symbol. \
-        direction=backward: finds paths from the symbol to leaf functions. \
-        Detects and marks cycles. Entry points: main, Dart lifecycle methods, \
-        or any symbol with zero callers.")]
-    pub async fn sutra_trace(
-        &self,
-        Parameters(args): Parameters<TraceArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::trace::handle(
-            ctx.db(),
-            &args.symbol,
-            args.direction.as_deref(),
-            args.limit,
-            args.follow_fields,
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(description = "Blast radius of a git diff. \
-        Shows changed files, affected symbols, and their callers.")]
-    pub async fn sutra_diff_impact(
-        &self,
-        Parameters(args): Parameters<DiffImpactArgs>,
-    ) -> Result<String, ErrorData> {
-        self.await_parse(&args.workspace).await;
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::diff_impact::handle(
-            ctx.db(),
-            ctx.workspace_root(),
-            args.base.as_deref(),
-            args.head.as_deref(),
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(description = "Per-commit structural manifest for a commit range. \
-        Returns each commit with its changed files and symbol-level change \
-        classifications (added/deleted/signature_changed/body_changed). \
-        Use for multi-commit branch review where per-commit intent matters. \
-        Defaults to branch range (merge-base..HEAD). Max 50 commits.")]
-    pub async fn sutra_commit_manifest(
-        &self,
-        Parameters(args): Parameters<CommitManifestArgs>,
-    ) -> Result<String, ErrorData> {
-        self.await_parse(&args.workspace).await;
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::commit_manifest::handle(
-            ctx.db(),
-            ctx.workspace_root(),
-            args.base.as_deref(),
-            args.head.as_deref(),
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(description = "Composite PR risk score (0.0–1.0) for a git diff. \
-        Combines blast_radius, complexity, churn, and volume signals with \
-        documented weights. Returns per-signal breakdown and top-N riskiest \
-        changed symbols.")]
-    pub async fn sutra_pr_risk(
-        &self,
-        Parameters(args): Parameters<PrRiskArgs>,
-    ) -> Result<String, ErrorData> {
-        self.await_parse(&args.workspace).await;
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::pr_risk::handle(
-            ctx.db(),
-            ctx.workspace_root(),
-            args.base.as_deref(),
-            args.head.as_deref(),
-            args.explain.unwrap_or(false),
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "Git history of a symbol's file with commit classification \
-        (feature, bugfix, refactor, test, docs, chore, performance, unknown). \
-        Uses --follow for rename tracking."
-    )]
-    pub async fn sutra_provenance(
-        &self,
-        Parameters(args): Parameters<ProvenanceArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::provenance::handle(ctx.db(), ctx.workspace_root(), &args.symbol)
-            .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 
@@ -1175,6 +995,7 @@ impl SutraServer {
                     "is_stale": freshness["is_stale"],
                     "files": files.len(),
                     "symbols": total_symbols,
+                    "parse_errors": files.iter().filter(|f| !f.parsed_ok).count(),
                 });
                 if freshness.get("parsing_in_progress") == Some(&serde_json::Value::Bool(true)) {
                     val["parsing_in_progress"] = serde_json::Value::Bool(true);

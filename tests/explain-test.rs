@@ -1,5 +1,5 @@
 use sutra::db::{Db, InsertSymbolParams};
-use sutra::tools::{impact, map, pr_risk};
+use sutra::tools::{impact, map};
 
 fn sym<'a>(
     file_id: i64,
@@ -136,52 +136,4 @@ fn impact_explain_true_has_frontier_and_thresholds() {
     assert_eq!(thresholds["high"]["files_touched"], 20);
     assert_eq!(thresholds["medium"]["direct_callers"], 5);
     assert_eq!(thresholds["medium"]["files_touched"], 8);
-}
-
-#[test]
-fn pr_risk_explain_true_has_ceilings_and_contributions() {
-    let (_dir, db) = setup_db();
-    let changed = vec!["src/a.rs".to_string()];
-    let result = pr_risk::compute(&db, &changed, &Default::default(), true).unwrap();
-
-    let explain = &result["_explain"];
-    assert!(explain.is_object());
-    assert!(explain["formula"].is_string());
-    assert!(explain["riskiest_symbols_formula"].is_string());
-
-    let signals = &explain["signals"];
-    for key in &["blast_radius", "complexity", "churn", "volume"] {
-        let sig = &signals[key];
-        assert!(sig["ceiling"].is_number(), "{key} must have ceiling");
-        assert!(
-            sig["contribution"].is_number(),
-            "{key} must have contribution"
-        );
-    }
-}
-
-#[test]
-fn pr_risk_explain_false_has_no_explain_key() {
-    let (_dir, db) = setup_db();
-    let changed = vec!["src/a.rs".to_string()];
-    let result = pr_risk::compute(&db, &changed, &Default::default(), false).unwrap();
-    assert!(result.get("_explain").is_none());
-}
-
-#[test]
-fn pr_risk_explain_true_empty_diff_has_explain() {
-    let (_dir, db) = setup_db();
-    let result = pr_risk::compute(&db, &[], &Default::default(), true).unwrap();
-    assert_eq!(result["composite_score"], 0.0);
-    let explain = &result["_explain"];
-    assert!(
-        explain.is_object(),
-        "_explain must be present on empty diff"
-    );
-    assert!(explain["formula"].is_string());
-    for key in &["blast_radius", "complexity", "churn", "volume"] {
-        let sig = &explain["signals"][key];
-        assert!(sig["ceiling"].is_number(), "{key} must have ceiling");
-        assert_eq!(sig["contribution"], 0.0, "{key} contribution must be 0");
-    }
 }

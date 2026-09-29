@@ -8,10 +8,39 @@ use std::sync::Arc;
 use crate::db::{Db, SearchTier, SymbolRow};
 use crate::error::Result;
 use crate::parser::adapter::any_language_is_test_path;
-use crate::tools::context::{estimate_tokens, read_line_span};
 use crate::tools::explore_lexical::{self, DocFields};
 use crate::tools::outline;
 use crate::vocabulary;
+
+fn estimate_tokens(content: &str) -> usize {
+    let words = content.split_whitespace().count() * 13 / 10;
+    let chars = content.chars().count() / 4;
+    words.max(chars).max(1)
+}
+
+/// Source text of a 1-based line span, or `None` when the file is unreadable
+/// or the span is empty: `span_tokens` then falls back to a per-line estimate.
+fn read_line_span(
+    workspace_root: &Path,
+    rel_path: &str,
+    start_line: i64,
+    end_line: i64,
+) -> Option<String> {
+    let source = match std::fs::read_to_string(workspace_root.join(rel_path)) {
+        Ok(source) => source,
+        Err(e) => {
+            tracing::debug!(path = rel_path, error = %e, "explore: span unreadable, estimating tokens per line");
+            return None;
+        }
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let start = (start_line as usize).saturating_sub(1);
+    let end = std::cmp::min(end_line as usize, lines.len());
+    if start >= end {
+        return None;
+    }
+    Some(lines[start..end].join("\n"))
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExploreArgs {
@@ -942,6 +971,24 @@ fn empty_lexical_result(query: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn estimate_tokens_word_dominant() {
+        assert_eq!(estimate_tokens("hello world foo bar baz"), 6);
+    }
+
+    #[test]
+    fn estimate_tokens_char_dominant() {
+        assert_eq!(
+            estimate_tokens("fn foo(a_long_param: SomeLongTypeName) -> AnotherLongType"),
+            14
+        );
+    }
+
+    #[test]
+    fn estimate_tokens_minimum_one() {
+        assert_eq!(estimate_tokens(""), 1);
+    }
 
     #[test]
     fn doc_line_takes_first_line_only() {

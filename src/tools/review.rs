@@ -18,7 +18,6 @@ use crate::git;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules;
 use crate::tools::changed_symbols::ChangedSymbols;
-use crate::tools::scoring;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
@@ -158,8 +157,8 @@ pub fn handle(
                 json!({
                     "file": c.file_path,
                     "symbol": c.symbol_name,
-                    "text_delta": scoring::round3(c.text_delta),
-                    "hrr_delta": scoring::round3(c.hrr_delta),
+                    "text_delta": round3(c.text_delta),
+                    "hrr_delta": round3(c.hrr_delta),
                     "quadrant": c.quadrant.as_str(),
                     "detail": format!(
                         "{}: text changed {:.0}% but structural shape changed {:.0}%",
@@ -799,4 +798,8 @@ pub fn compute(
         );
     }
     Ok(result)
+}
+
+fn round3(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
 }

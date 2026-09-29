@@ -4,7 +4,7 @@
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a symbol graph of your codebase plus write-time checks against the patterns that cause bugs in agent-written code, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (queryable via `sutra_conventions`), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations and accumulates code-anchored lessons from agent experience. It exposes all of this through MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations and accumulates code-anchored lessons from agent experience. It exposes all of this through MCP tools that AI coding agents (and humans) can call.
 
 The core loop: **explore** (find relevant code in one call, with lessons and conventions surfaced contextually as an agent reads) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints and boundaries).
 
@@ -44,7 +44,7 @@ Sutra discovers components — groups of related code — via directory-structur
 
 Formal Concept Analysis (FCA) discovers implicit patterns in your code: "public functions return Result," "handlers take &self as first parameter," "error types implement Display." An identity→obligation filter separates "what things are" (structural facts) from "what they should do" (behavioral patterns worth surfacing), and toolchain-enforced patterns (e.g. `async` implying a returned future) are automatically excluded since the compiler already guarantees them.
 
-Detection runs in the parse pipeline and persists to the index. `sutra_conventions(action="list")` returns the discovered conventions — each with its antecedent→consequent implication, support, confidence, and component scope. Conventions are surfaced as a queryable list; they are not enforced in review. (Two earlier in-loop consumers — an orientation summary and a review-time deviation report — were retired after live use showed a high false-positive rate.)
+Detection runs in the parse pipeline and persists to the index — each convention with its antecedent→consequent implication, support, confidence, and component scope. Conventions are descriptive only: no MCP tool lists them (sutra/518) and they are not enforced in review. (Two earlier in-loop consumers — an orientation summary and a review-time deviation report — were retired after live use showed a high false-positive rate.)
 
 ### 4. Constraint enforcement (Layer 3)
 
@@ -140,7 +140,7 @@ Sutra lets you define human-readable names for code concepts so agents (and huma
 
 Three sections map terms to different target kinds:
 
-- **`[component]`** — string value maps a human name to a component name (as shown in `sutra_components`)
+- **`[component]`** — string value maps a human name to a component name (component names come from the directory-based clustering)
 - **`[file]`** — maps a human name to a file path
 - **`[symbol]`** — maps a human name to a symbol name
 
@@ -202,17 +202,13 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | Tool | Purpose |
 |---|---|
 | `sutra_workspace` | Register workspace, check freshness, reparse, and manage tool tiers |
-| `sutra_health` | Per-workspace file/symbol counts, parse errors, staleness |
 | `sutra_map` | Project file skeleton ranked by importance (symbol count + fan-in + blast radius) |
 | `sutra_outline` | File symbol table of contents — all symbols with kinds, line ranges, signatures |
 | `sutra_explore` | Structural exploration — resolves aliases, qualified names, and fuzzy queries → ranked symbol map with fetch instructions and strategy hint |
 | `sutra_lookup` | Look up symbols by name (FTS5-backed; `\|` alternation). Not a text search — use rg for that |
 | `sutra_symbol` | Read a symbol's source code with line numbers and context |
-| `sutra_context` | Token-budgeted context packing — symbol + deps + dependents within a budget |
 | `sutra_impact` | Blast radius analysis — direct callers, BFS depth-3, risk level |
 | `sutra_deps` | File-level import dependency graph (BFS from a file, or all edges) |
-| `sutra_components` | List discovered architectural components and member files |
-| `sutra_conventions` | List discovered conventions (FCA-derived patterns) |
 | `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
 | `sutra_remember` | Write a code-anchored lesson with text and location anchors (auto-enriched with patterns and categories) |
 | `sutra_lessons` | Query lessons — FTS5 text search with structured filters (category, symbol, verified status, project) |
@@ -224,17 +220,12 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 |---|---|
 | `sutra_refs` | All usages of a symbol across the codebase, grouped by file. Optional `context_kind` filter (call, construction, type_use) |
 | `sutra_calls` | Call hierarchy — callers or callees, BFS to configurable depth |
-| `sutra_diff_impact` | Blast radius of a git diff — changed files, affected symbols, their callers |
 | `sutra_cochange` | Files that historically change together with a given file |
-| `sutra_pr_risk` | Composite PR risk score (0.0–1.0) combining blast radius, complexity, churn, and volume |
-| `sutra_provenance` | Git history of a symbol's file with commit classification (feature, bugfix, refactor, etc.) |
-| `sutra_trace` | Trace call chains — forward (entry points → symbol) or backward (symbol → leaves). Detects cycles |
 | `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
 | `sutra_review` | Structural review of a diff — per-symbol changes with callee diffs, constraint violations, and the dup_exists / sibling_patterns / orphans / behavioral_coupling advisories |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
 | `sutra_similar` | Find structurally similar functions (with symbol) or near-duplicate pattern families (without symbol) |
-| `sutra_commit_manifest` | Manifest of symbols and files changed in a commit or range |
 
 ## Common workflows
 
@@ -268,8 +259,6 @@ sutra_explore(query="parse_rules")  → definition location
 sutra_impact(symbol="parse_rules") → blast radius and risk level
 sutra_calls(symbol="parse_rules")  → who calls it, what it calls
 sutra_refs(symbol="parse_rules")   → every usage site
-sutra_provenance(symbol="parse_rules") → git history with commit types
-sutra_trace(symbol="parse_rules")  → call chains from entry points
 ```
 
 ### Record and query lessons

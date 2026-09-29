@@ -199,19 +199,6 @@ impl Db {
         }
     }
 
-    pub fn clustering_meta_full(&self) -> Result<Option<(i64, i64, String)>> {
-        let conn = self.conn.lock();
-        match conn.query_row(
-            "SELECT edge_count, file_count, clustered_at FROM component_clustering_meta WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ) {
-            Ok(tuple) => Ok(Some(tuple)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
     pub fn component_events(&self, component_id: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn

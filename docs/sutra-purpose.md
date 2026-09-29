@@ -68,7 +68,7 @@ done1. sutra/472 (swallow engine: justify marker, rename-robust match key) and
 | **Non-lexical SWALLOW** (absence reads as zero, log-and-default arms) | Not lexically detectable. The ratchet catches the idioms, not the semantics. |
 | **PREMISE** (20 bugs), **TESTVAC** (11) | No structural leverage. These are process problems: the verification protocol, reading the source instead of recalling it, red-green tests. Lessons can surface known traps. |
 | **REFAC, DEBRIS, LAYER** | Low frequency and low leverage. Existing constraints cover layering. |
-| **Accretion / growth gate** | Zero bug evidence. `sutra_diff_impact` still flags changed functions at cognitive ≥ 15. |
+| **Accretion / growth gate** | Zero bug evidence. `sutra_review` reports each changed symbol's cognitive complexity; nothing gates on it. |
 
 ## Design rules for write-side mechanisms
 
@@ -132,15 +132,15 @@ follows these or gives a reason.
 | Area | Surfaces | Role |
 |---|---|---|
 | Structural index | tree-sitter → SQLite: files, symbols, refs, imports; per-language adapters (Rust, Dart, Python, TS/JS, C) | Ground truth for everything else |
-| Navigation | `sutra_explore`, `sutra_lookup`, `sutra_symbol`, `sutra_outline`, `sutra_map`, `sutra_context`, `sutra_refs`, `sutra_calls`, `sutra_trace`, `sutra_deps`, `sutra_impact` | Read side |
+| Navigation | `sutra_explore`, `sutra_lookup`, `sutra_symbol`, `sutra_outline`, `sutra_map`, `sutra_refs`, `sutra_calls`, `sutra_deps`, `sutra_impact` | Read side |
 | Freshness | Content-based staleness; refresh before answering ([freshness-map.md](freshness-map.md)) | Every answer carries `as_of`/`is_stale` |
 | Constraints and guard | `.sutra/rules.toml` (forbidden deps, cycles, fan-in, forbidden_patterns), DD engine, `sutra-guard` edit hook, `sutra check`, `sutra_constraints` ([constraints-map.md](constraints-map.md)) | Write side, blocking. Home of the SWALLOW ratchet |
-| Review | `sutra_review`, `sutra_diff_impact`, `sutra_pr_risk`, `sutra_commit_manifest` | Write side, advisory. Home of the PAR (`sibling_patterns`, sutra/467), orphans (`orphans`, sutra/483) and DUP mechanisms. `behavioral_coupling` lists co-change partners with no static edge |
+| Review | `sutra_review` | Write side, advisory. Home of the PAR (`sibling_patterns`, sutra/467), orphans (`orphans`, sutra/483) and DUP mechanisms. `behavioral_coupling` lists co-change partners with no static edge |
 | Similarity | HRR vectors (embed, strip), lexical tokens, `sutra_similar` ([similarity-map.md](similarity-map.md)) | Substrate for the DUP mechanism. Strip mode is not a duplicate detector (sutra/484) |
 | Dead code | `sutra_dead` | Substrate for the orphans mechanism (resolution corrected in sutra/477; liveness rules in `db::orphans`, sutra/483) |
 | Git signals | `sutra_cochange`, `sutra_hotspots`, per-symbol cyclomatic/cognitive complexity | Review inputs; hotspots were the one health-era signal that was right on all 4 pilot repos |
-| Components | Directory-based clustering, `sutra_components` | Boundary constraints and explore ranking |
-| Conventions | FCA detection, `sutra_conventions` (list only) | Descriptive. In-loop consumers were removed after live use showed high false positives (sutra/312, 313) |
+| Components | Directory-based clustering (no MCP tool since sutra/518) | Boundary constraints and explore ranking |
+| Conventions | FCA detection, persisted by the parse pipeline (no MCP tool since sutra/518) | Descriptive. In-loop consumers were removed after live use showed high false positives (sutra/312, 313) |
 | Vocabulary | `.sutra/aliases.toml` | Human terms → code, resolved first by explore |
 | Lessons | `~/.sutra/lessons.db`, `sutra_remember`, `sutra_lessons`, surfaced inline by symbol/impact | Cross-project negative knowledge anchored to code |
 
@@ -151,6 +151,12 @@ follows these or gives a reason.
   [health-disposition.md](health-disposition.md).
 - **Orient surface and the review-time convention deviation report**: removed
   in sutra/312 and 313 because of their false-positive rate.
+- **Nine MCP tools** (`sutra_diff_impact`, `sutra_pr_risk`,
+  `sutra_commit_manifest`, `sutra_trace`, `sutra_provenance`, `sutra_context`,
+  `sutra_conventions`, `sutra_components`, `sutra_health`): retired in
+  sutra/518 for near-zero use or noisy output. Verdicts are in
+  [tool-surface-audit.md](tool-surface-audit.md). `diff_impact`'s symbol
+  changes live on in `sutra_review`; `sutra health` stays on the CLI.
 - **Verification orchestration** (Kani, proptest, mutation testing as a sutra
   pipeline): not pursued. TESTVAC is real, but its fix is red-green discipline
   and mutation testing run by the agent, not a sutra layer. Revisit only if
