@@ -49,15 +49,17 @@ fn walk_cyclomatic(node: Node, src: &[u8], lang: &str, count: &mut u32) {
             }
             _ => {}
         },
-        "c" => match kind {
+        // C++ kinds never occur in a C tree, so one arm serves both grammars.
+        "c" | "cpp" => match kind {
             "if_statement"
             | "while_statement"
             | "for_statement"
+            | "for_range_loop"
             | "do_statement"
             | "conditional_expression" => {
                 *count += 1;
             }
-            "case_statement" => {
+            "case_statement" | "catch_clause" => {
                 *count += 1;
             }
             "switch_statement" => {
@@ -222,11 +224,14 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
             "function_expression" => (false, true),
             _ => (false, false),
         },
-        "c" => match kind {
+        "c" | "cpp" => match kind {
             "if_statement" | "conditional_expression" => (true, true),
-            "while_statement" | "for_statement" | "do_statement" => (true, true),
+            "while_statement" | "for_statement" | "for_range_loop" | "do_statement" => (true, true),
             "switch_statement" => (true, false),
             "case_statement" | "goto_statement" => (true, false),
+            "try_statement" => (true, true),
+            "catch_clause" => (true, false),
+            "lambda_expression" => (false, true),
             _ => (false, false),
         },
         "python" => match kind {
@@ -263,7 +268,8 @@ fn is_logical_operator(node: Node, src: &[u8]) -> bool {
     }
     if let Some(op) = node.child_by_field_name("operator") {
         let text = node_text(op, src);
-        return text == "&&" || text == "||" || text == "??";
+        // `and`/`or` are C++'s alternative tokens for `&&`/`||`.
+        return matches!(text, "&&" | "||" | "??" | "and" | "or");
     }
     false
 }

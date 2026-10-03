@@ -385,6 +385,30 @@ impl LanguageAdapter for CAdapter {
     }
 }
 
+pub struct CppAdapter;
+
+impl LanguageAdapter for CppAdapter {
+    fn language_id(&self) -> &str {
+        "cpp"
+    }
+    fn extensions(&self) -> &[&str] {
+        super::cpp::EXTENSIONS
+    }
+    fn grammar(&self) -> Language {
+        tree_sitter_cpp::LANGUAGE.into()
+    }
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
+        super::cpp::parse(ctx)
+    }
+    fn is_test_path(&self, path: &str) -> bool {
+        super::cpp::is_test_path(path)
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        // Namespaces are open and nothing enforces them (sutra/525).
+        ModuleBoundaryStrength::Weak
+    }
+}
+
 pub struct PythonAdapter;
 
 impl LanguageAdapter for PythonAdapter {
@@ -494,6 +518,7 @@ pub fn default_registry() -> LanguageRegistry {
     r.register(Box::new(RustAdapter));
     r.register(Box::new(DartAdapter));
     r.register(Box::new(CAdapter));
+    r.register(Box::new(CppAdapter));
     r.register(Box::new(PythonAdapter));
     r.register(Box::new(JsAdapter));
     r.register(Box::new(TsAdapter));
@@ -514,6 +539,10 @@ mod tests {
             ("lib/main.dart", "dart"),
             ("src/parse.c", "c"),
             ("src/parse.h", "c"),
+            ("db/db_impl.cc", "cpp"),
+            ("src/main.cpp", "cpp"),
+            ("include/leveldb/db.hpp", "cpp"),
+            ("src/parse.c++", "cpp"),
             ("app/models.py", "python"),
             ("web/index.js", "javascript"),
             ("web/App.jsx", "javascript"),
@@ -748,9 +777,10 @@ mod tests {
         assert_eq!(mults.get("rust"), Some(&2.0));
         assert_eq!(mults.get("dart"), Some(&1.5));
         assert_eq!(mults.get("c"), Some(&1.0));
+        assert_eq!(mults.get("cpp"), Some(&1.0));
         assert_eq!(mults.get("python"), Some(&1.0));
         assert_eq!(mults.get("javascript"), Some(&1.5));
         assert_eq!(mults.get("typescript"), Some(&1.5));
-        assert_eq!(mults.len(), 6);
+        assert_eq!(mults.len(), 7);
     }
 }

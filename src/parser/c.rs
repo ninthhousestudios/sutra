@@ -7,12 +7,17 @@ use crate::parser::{
 use tree_sitter::{Node, TreeCursor};
 
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
+    parse_dialect(ctx, Dialect::C)
+}
+
+/// Parse a tree from either grammar through the shared C extractors.
+pub(super) fn parse_dialect(ctx: &ParseContext, dialect: Dialect) -> Result<ParseResult> {
     let root = ctx.tree.root_node();
     let parsed_ok = !root.has_error();
     let src = ctx.source;
     let file_path = ctx.file_path;
 
-    let symbols = collect_symbols(root, src, file_path);
+    let symbols = collect_symbols(root, src, file_path, dialect);
 
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
@@ -21,7 +26,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 
     Ok(ParseResult {
         file_path: file_path.to_string(),
-        language: "c".to_string(),
+        language: dialect.language_id().to_string(),
         symbols,
         references,
         imports,
@@ -32,6 +37,33 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     })
 }
 
+/// Which grammar produced the tree. The C++ adapter reuses this module's
+/// extraction for the C subset (sutra/525 "Layering"); the dialect carries the
+/// few things that differ — the language id handed to complexity scoring and
+/// the test-file naming conventions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Dialect {
+    C,
+    Cpp,
+}
+
+impl Dialect {
+    pub(super) fn language_id(self) -> &'static str {
+        match self {
+            Dialect::C => "c",
+            Dialect::Cpp => "cpp",
+        }
+    }
+
+    /// Whether a lowercased file name carries this dialect's test-file suffix.
+    fn has_test_suffix(self, lower_file_name: &str) -> bool {
+        match self {
+            Dialect::C => lower_file_name.ends_with("_test.c"),
+            Dialect::Cpp => super::cpp::has_test_suffix(lower_file_name),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Symbol flags
 // ---------------------------------------------------------------------------
@@ -39,10 +71,10 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 pub const FLAG_TEST: u32 = 0x01;
 pub const FLAG_FFI_ENTRY: u32 = 0x04;
 
-fn extract_flags(file_path: &str, name: &str, node: Node) -> u32 {
+fn extract_flags(file_path: &str, name: &str, node: Node, dialect: Dialect) -> u32 {
     let mut flags = 0u32;
 
-    if is_test_file(file_path) {
+    if is_test_file(file_path, dialect) {
         flags |= FLAG_TEST;
     }
 
@@ -77,13 +109,17 @@ fn extract_flags(file_path: &str, name: &str, node: Node) -> u32 {
 /// symbol `FLAG_TEST`, and a directory is a weaker claim than a file name
 /// (sutra/295).
 pub fn is_test_path(path: &str) -> bool {
-    is_test_file(path) || crate::parser::adapter::path_in_test_dir(path)
+    is_test_path_for(path, Dialect::C)
 }
 
-fn is_test_file(path: &str) -> bool {
+pub(super) fn is_test_path_for(path: &str, dialect: Dialect) -> bool {
+    is_test_file(path, dialect) || crate::parser::adapter::path_in_test_dir(path)
+}
+
+fn is_test_file(path: &str, dialect: Dialect) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
     let lower = file_name.to_ascii_lowercase();
-    lower.ends_with("_test.c")
+    dialect.has_test_suffix(&lower)
         || lower.starts_with("test_")
         || path.contains("/tests/")
         || path.starts_with("tests/")
@@ -100,13 +136,18 @@ fn is_header_guard(name: &str) -> bool {
 // Symbol extraction
 // ---------------------------------------------------------------------------
 
-fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymbol> {
+fn collect_symbols(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    dialect: Dialect,
+) -> Vec<ExtractedSymbol> {
     let mut symbols = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_definition" => {
-                if let Some(sym) = extract_function(child, src, file_path) {
+                if let Some(sym) = extract_function(child, src, file_path, dialect) {
                     symbols.push(sym);
                 }
             }
@@ -161,16 +202,16 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
                     }
                 }
                 if !has_specifier(child, src, "extern") {
-                    collect_var_declarators(child, src, file_path, &mut symbols);
+                    collect_var_declarators(child, src, file_path, dialect, &mut symbols);
                 }
             }
             "preproc_function_def" => {
-                if let Some(sym) = extract_macro(child, src, file_path) {
+                if let Some(sym) = extract_macro(child, src, file_path, dialect) {
                     symbols.push(sym);
                 }
             }
             "preproc_def" => {
-                if let Some(sym) = extract_const_define(child, src, file_path) {
+                if let Some(sym) = extract_const_define(child, src, file_path, dialect) {
                     symbols.push(sym);
                 }
             }
@@ -180,7 +221,12 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
     symbols
 }
 
-fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
+fn extract_function(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    dialect: Dialect,
+) -> Option<ExtractedSymbol> {
     let declarator = node.child_by_field_name("declarator")?;
     let func_decl = find_function_declarator(declarator)?;
     let name_decl = func_decl.child_by_field_name("declarator")?;
@@ -199,12 +245,12 @@ fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<Extracted
         .as_ref()
         .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
     let language_attrs = extract_fn_language_attrs(node, src, declarator);
-    let flags = extract_flags(file_path, &name, node);
+    let flags = extract_flags(file_path, &name, node, dialect);
 
     let (cyclomatic, cognitive) = if let Some(body) = node.child_by_field_name("body") {
         (
-            Some(complexity::cyclomatic(body, src, "c")),
-            Some(complexity::cognitive(body, src, "c")),
+            Some(complexity::cyclomatic(body, src, dialect.language_id())),
+            Some(complexity::cognitive(body, src, dialect.language_id())),
         )
     } else {
         (Some(1), Some(0))
@@ -410,10 +456,15 @@ fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<Extract
     }
 }
 
-fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
+fn extract_macro(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    dialect: Dialect,
+) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, src).to_string();
-    let flags = extract_flags(file_path, &name, node);
+    let flags = extract_flags(file_path, &name, node, dialect);
     let docstring = extract_docstring(node, src);
     let sh = Some(structural_hash::compute(
         node,
@@ -443,7 +494,12 @@ fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSym
     })
 }
 
-fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
+fn extract_const_define(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    dialect: Dialect,
+) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, src).to_string();
 
@@ -451,7 +507,7 @@ fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<Extra
         return None;
     }
 
-    let flags = extract_flags(file_path, &name, node);
+    let flags = extract_flags(file_path, &name, node, dialect);
     let docstring = extract_docstring(node, src);
     let sh = Some(structural_hash::compute(
         node,
@@ -485,6 +541,7 @@ fn collect_var_declarators(
     node: Node,
     src: &[u8],
     file_path: &str,
+    dialect: Dialect,
     symbols: &mut Vec<ExtractedSymbol>,
 ) {
     let has_const = has_specifier(node, src, "const");
@@ -507,7 +564,7 @@ fn collect_var_declarators(
                 src,
                 name_ident.map(|n| (n.start_byte(), n.end_byte())),
             ));
-            let flags = extract_flags(file_path, &name, node);
+            let flags = extract_flags(file_path, &name, node, dialect);
             symbols.push(ExtractedSymbol {
                 qualified_name: name.clone(),
                 short_name: name,
@@ -693,7 +750,9 @@ fn extract_fn_language_attrs(node: Node, src: &[u8], declarator: Node) -> Option
     {
         let mut pcursor = params.walk();
         for child in params.children(&mut pcursor) {
-            if child.kind() == "variadic_parameter" {
+            // C wraps `...` in `variadic_parameter`; tree-sitter-cpp leaves it
+            // a bare `...` token.
+            if matches!(child.kind(), "variadic_parameter" | "...") {
                 attrs.insert("is_variadic".into(), true.into());
             }
         }
@@ -1133,10 +1192,10 @@ mod tests {
 
     #[test]
     fn test_file_heuristic() {
-        assert!(is_test_file("foo_test.c"));
-        assert!(is_test_file("test_foo.c"));
-        assert!(is_test_file("tests/bar.c"));
-        assert!(!is_test_file("main.c"));
+        assert!(is_test_file("foo_test.c", Dialect::C));
+        assert!(is_test_file("test_foo.c", Dialect::C));
+        assert!(is_test_file("tests/bar.c", Dialect::C));
+        assert!(!is_test_file("main.c", Dialect::C));
     }
 
     #[test]
