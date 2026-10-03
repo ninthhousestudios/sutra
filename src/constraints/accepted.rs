@@ -195,32 +195,58 @@ pub struct AcceptedLoad {
 /// none). IO or parse failure -> hard `Err`: a malformed file must fail loud,
 /// never silently read as "no acceptances" (that re-flags reviewed code).
 pub fn load_accepted_file(root: &Path) -> Result<AcceptedFile> {
-    Ok(read_file_and_hash(root)?.0)
+    parse_accepted(root, &read_raw(root)?)
 }
 
-/// Read the raw file once and return both the parsed model and a content hash of
-/// the bytes on disk (the freshness marker). Absent file hashes as empty bytes so
-/// "no file" and "empty cache" agree.
-fn read_file_and_hash(root: &Path) -> Result<(AcceptedFile, String)> {
+/// The raw bytes on disk. Absent file reads as empty so "no file" and "empty
+/// cache" agree.
+fn read_raw(root: &Path) -> Result<String> {
     let path = accepted_path(root);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(SutraError::Internal(format!(
-                "reading {}: {e}",
-                path.display()
-            )));
-        }
-    };
-    let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-    let file = if content.trim().is_empty() {
-        AcceptedFile::default()
-    } else {
-        toml::from_str(&content)
-            .map_err(|e| SutraError::Internal(format!("{}: parse error: {e}", path.display())))?
-    };
-    Ok((file, hash))
+    match std::fs::read_to_string(&path) {
+        Ok(c) => Ok(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(SutraError::Internal(format!(
+            "reading {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+fn parse_accepted(root: &Path, content: &str) -> Result<AcceptedFile> {
+    if content.trim().is_empty() {
+        return Ok(AcceptedFile::default());
+    }
+    toml::from_str(content).map_err(|e| {
+        SutraError::Internal(format!(
+            "{}: parse error: {e}",
+            accepted_path(root).display()
+        ))
+    })
+}
+
+/// The freshness marker: a hash of the file bytes AND of the rule set they are
+/// resolved against. The cache stores entries resolved name -> blake3 id, and an
+/// id changes on any kind/param/scope edit, so a marker over the file alone stays
+/// "fresh" across a rules.toml edit while every cached id is orphaned — waivers
+/// then silently stop matching (sutra/539). Folding in every `(name, id)` pair,
+/// sorted so rule order is irrelevant, makes any identity-changing rules edit
+/// invalidate the projection. Callers must pass the full, unfiltered constraint
+/// set: a subset hashes differently and reads as permanently stale.
+fn marker_for(content: &str, constraints: &[Constraint]) -> String {
+    let mut ids: Vec<(Option<&str>, &str)> = constraints
+        .iter()
+        .map(|c| (c.name.as_deref(), &*c.id))
+        .collect();
+    ids.sort_unstable();
+    let mut h = blake3::Hasher::new();
+    h.update(content.as_bytes());
+    for (name, id) in ids {
+        h.update(b"\0");
+        h.update(name.unwrap_or("").as_bytes());
+        h.update(b"\0");
+        h.update(id.as_bytes());
+    }
+    h.finalize().to_hex().to_string()
 }
 
 /// Resolve every entry against the live constraints, partitioning into
@@ -310,34 +336,37 @@ fn warn_for(kind: AcceptedWarningKind, constraint_ref: String, file: String) -> 
 // Freshness gate
 // ---------------------------------------------------------------------------
 
-/// Content hash of the tracked file as it currently sits on disk. Cheap enough
-/// (a read + blake3) to call on the guard's hot path to decide staleness without
-/// parsing.
-pub fn current_file_hash(root: &Path) -> Result<String> {
-    Ok(read_file_and_hash(root)?.1)
+/// The marker for the tracked file as it currently sits on disk, resolved
+/// against `constraints`. Cheap enough (a read + blake3) to call on the guard's
+/// hot path to decide staleness without parsing.
+pub fn current_marker(root: &Path, constraints: &[Constraint]) -> Result<String> {
+    Ok(marker_for(&read_raw(root)?, constraints))
 }
 
-/// True when the DB cache was last projected from the file currently on disk.
-/// A `None` marker (never projected) is stale by definition.
-pub fn is_cache_fresh(db: &Db, root: &Path) -> Result<bool> {
+/// True when the DB cache was last projected from the file currently on disk
+/// against the current rule set. A `None` marker (never projected) is stale by
+/// definition.
+pub fn is_cache_fresh(db: &Db, root: &Path, constraints: &[Constraint]) -> Result<bool> {
     let marker = db.get_accepted_sync_marker()?;
-    Ok(marker.as_deref() == Some(current_file_hash(root)?.as_str()))
+    Ok(marker.as_deref() == Some(current_marker(root, constraints)?.as_str()))
 }
 
 /// Server-side freshness gate: parse + resolve the file (so warnings are always
-/// current), and re-project the cache only when the on-disk hash differs from the
-/// stored marker. Returns the warnings to surface on the report. The parse is
-/// microseconds; the freshness check gates only the DB *write*, not the read.
+/// current), and re-project the cache only when the marker (file bytes + rule
+/// identities) differs from the stored one. Returns the warnings to surface on
+/// the report. The parse is microseconds; the freshness check gates only the DB
+/// *write*, not the read.
 pub fn ensure_cache_fresh(
     db: &Db,
     root: &Path,
     constraints: &[Constraint],
 ) -> Result<Vec<AcceptedWarning>> {
-    let (file, hash) = read_file_and_hash(root)?;
-    let stale = db.get_accepted_sync_marker()?.as_deref() != Some(hash.as_str());
-    let load = resolve_accepted(file, constraints);
+    let content = read_raw(root)?;
+    let marker = marker_for(&content, constraints);
+    let stale = db.get_accepted_sync_marker()?.as_deref() != Some(marker.as_str());
+    let load = resolve_accepted(parse_accepted(root, &content)?, constraints);
     if stale {
-        db.reproject_accepted(&load.waivers, &load.acks, &hash)?;
+        db.reproject_accepted(&load.waivers, &load.acks, &marker)?;
     }
     Ok(load.warnings)
 }
@@ -599,9 +628,13 @@ pub fn refresh_cache(
 /// so it cannot reproject; it uses this to decide whether the cache it is about
 /// to read is coherent with the file on disk, falling back to an in-memory
 /// resolution ([`resolve_waivers_for_guard`]) when it is not.
-pub fn is_cache_fresh_conn(conn: &rusqlite::Connection, root: &Path) -> Result<bool> {
+pub fn is_cache_fresh_conn(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    constraints: &[Constraint],
+) -> Result<bool> {
     let marker = crate::db::accepted_sync_marker_from_conn(conn);
-    Ok(marker.as_deref() == Some(current_file_hash(root)?.as_str()))
+    Ok(marker.as_deref() == Some(current_marker(root, constraints)?.as_str()))
 }
 
 /// The waivers the guard enforces, restricted to paths `relevant` accepts.
@@ -613,13 +646,16 @@ pub fn is_cache_fresh_conn(conn: &rusqlite::Connection, root: &Path) -> Result<b
 /// file, so the guard honors exactly what the next audit will (guard must
 /// predict the report, sutra/308 hazard 3). Acks are report-only; the guard
 /// never needs them. Every guard-side waiver read goes through here (sutra/459).
+///
+/// `constraints` must be the full rule set (see [`marker_for`]); waivers are
+/// matched by id afterwards, so extra constraints are harmless.
 pub fn guard_waivers(
     conn: &rusqlite::Connection,
     root: &Path,
     constraints: &[Constraint],
     relevant: impl Fn(&str) -> bool,
 ) -> Result<Vec<ConstraintWaiverRow>> {
-    if is_cache_fresh_conn(conn, root)? {
+    if is_cache_fresh_conn(conn, root, constraints)? {
         return Ok(crate::db::constraint_waivers_from_conn(conn)?
             .into_iter()
             .filter(|w| relevant(&w.file_path))
@@ -787,7 +823,7 @@ mod tests {
         let warns = ensure_cache_fresh(&db, root, &cs).unwrap();
         assert!(warns.is_empty());
         assert_eq!(db.get_constraint_waivers(None).unwrap().len(), 1);
-        assert!(is_cache_fresh(&db, root).unwrap());
+        assert!(is_cache_fresh(&db, root, &cs).unwrap());
 
         // Second gate: marker matches -> no re-projection, no duplication.
         ensure_cache_fresh(&db, root, &cs).unwrap();
@@ -810,9 +846,37 @@ mod tests {
 
         // Remove one entry from the file; the cache must shrink to match.
         remove_waiver(root, "no-loops", "src/b.rs", None).unwrap();
-        assert!(!is_cache_fresh(&db, root).unwrap());
+        assert!(!is_cache_fresh(&db, root, &cs).unwrap());
         ensure_cache_fresh(&db, root, &cs).unwrap();
         assert_eq!(db.get_constraint_waivers(None).unwrap().len(), 1);
+    }
+
+    /// sutra/539: a rules edit that keeps the name but reshapes the id (here a
+    /// scope change) must invalidate the cache, even though accepted.toml's bytes
+    /// are unchanged — otherwise the cached rows keep the old id and every
+    /// waiver for that rule silently stops matching.
+    #[test]
+    fn rules_edit_with_unchanged_file_reprojects_to_new_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let db = Db::open_unchecked("test", root).unwrap();
+        let before = one_named("no-loops");
+        let after = constraints(
+            "[[constraint]]\nkind = \"no_cycles\"\nname = \"no-loops\"\nscope = \"lib/\"\n",
+        );
+        assert_ne!(before[0].id, after[0].id, "scope edit must reshape the id");
+
+        let mut f = AcceptedFile::default();
+        f.waivers.push(waiver("no-loops", "src/a.rs"));
+        write_accepted_file(root, &mut f).unwrap();
+        ensure_cache_fresh(&db, root, &before).unwrap();
+        assert!(is_cache_fresh(&db, root, &before).unwrap());
+
+        assert!(!is_cache_fresh(&db, root, &after).unwrap());
+        ensure_cache_fresh(&db, root, &after).unwrap();
+        let rows = db.get_constraint_waivers(None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(&*rows[0].constraint_id, &*after[0].id);
     }
 
     #[test]

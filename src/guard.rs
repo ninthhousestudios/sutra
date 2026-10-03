@@ -884,11 +884,20 @@ pub fn check_proposed_patterns(
         Err(_) => return CheckOutcome::default(),
     };
     let (mut all_constraints, parse_errors) = loaded_rules.all_constraints();
-    all_constraints.retain(|c| {
+    // Blocking patterns first (stable sort keeps their order) so they can be
+    // checked as a prefix slice while `guard_waivers` still sees the full rule
+    // set its cache-freshness marker is computed over (sutra/539).
+    let is_blocking_pattern = |c: &rules::Constraint| {
         matches!(c.kind, ConstraintKind::ForbiddenPattern { .. })
             && c.severity == Severity::Blocking
-    });
-    if all_constraints.is_empty() {
+    };
+    all_constraints.sort_by_key(|c| !is_blocking_pattern(c));
+    let blocking_len = all_constraints
+        .iter()
+        .take_while(|c| is_blocking_pattern(c))
+        .count();
+    let blocking = &all_constraints[..blocking_len];
+    if blocking.is_empty() {
         return CheckOutcome {
             parse_errors,
             ..Default::default()
@@ -896,7 +905,7 @@ pub fn check_proposed_patterns(
     }
 
     let proposed_findings =
-        check_forbidden_patterns(&all_constraints, &[(rel_path, proposed_content)], &registry);
+        check_forbidden_patterns(blocking, &[(rel_path, proposed_content)], &registry);
     if proposed_findings.is_empty() {
         return CheckOutcome {
             parse_errors,
@@ -925,8 +934,7 @@ pub fn check_proposed_patterns(
     }
 
     let disk_content = std::fs::read_to_string(project_root.join(rel_path)).unwrap_or_default();
-    let disk_findings =
-        check_forbidden_patterns(&all_constraints, &[(rel_path, &disk_content)], &registry);
+    let disk_findings = check_forbidden_patterns(blocking, &[(rel_path, &disk_content)], &registry);
     let (disk_active, _) = waivers::partition(disk_findings, &constraint_waivers);
 
     // Multiset diff: each disk match cancels one proposed match with the same
@@ -3239,16 +3247,14 @@ scope = "src/"
         let proposed_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
         let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
 
-        let rule_id = {
-            let mut loaded = crate::rules::load_rules(dir.path()).unwrap();
-            let (constraints, _) = loaded.all_constraints();
-            constraints
-                .iter()
-                .find(|c| c.name.as_deref() == Some("no-clone"))
-                .unwrap()
-                .id
-                .to_string()
-        };
+        let mut loaded = crate::rules::load_rules(dir.path()).unwrap();
+        let (constraints, _) = loaded.all_constraints();
+        let rule_id = constraints
+            .iter()
+            .find(|c| c.name.as_deref() == Some("no-clone"))
+            .unwrap()
+            .id
+            .to_string();
 
         conn.execute(
             "INSERT INTO constraint_waivers \
@@ -3258,8 +3264,8 @@ scope = "src/"
         )
         .unwrap();
         // The cached row is only authoritative while the cache is fresh, i.e.
-        // projected from the accepted.toml currently on disk.
-        let hash = crate::constraints::accepted::current_file_hash(dir.path()).unwrap();
+        // projected from the accepted.toml currently on disk against these rules.
+        let hash = crate::constraints::accepted::current_marker(dir.path(), &constraints).unwrap();
         conn.execute_batch("CREATE TABLE accepted_sync (id INTEGER PRIMARY KEY, file_hash TEXT);")
             .unwrap();
         conn.execute(
