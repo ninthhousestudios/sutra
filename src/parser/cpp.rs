@@ -7,7 +7,7 @@
 //! Design decisions: `docs/adding-languages.md` § C++ (sutra/525).
 
 use crate::error::Result;
-use crate::parser::adapter::{ParseContext, node_text};
+use crate::parser::adapter::{ParseContext, node_text, path_has_dir_segment};
 use crate::parser::c::{self, Dialect};
 use crate::parser::rust::{LOCAL_BINDING_SENTINEL, strip_generic_args};
 use crate::parser::{
@@ -29,9 +29,31 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 
 /// Whether `path` is C++ test code: gtest's `*_test.cc` / `*_unittest.cc`
 /// naming (any C++ extension, plus `.c` for a cpp-only workspace), the shared
-/// `test_*` prefix, and `test/`/`tests/` directories.
+/// `test_*` prefix, and `test/`/`tests/` directories, plus LLVM-style
+/// `unittests/`.
 pub fn is_test_path(path: &str) -> bool {
-    c::is_test_path_for(path, Dialect::Cpp)
+    c::is_test_path_for(path, Dialect::Cpp) || path_has_dir_segment(path, "unittests")
+}
+
+/// Line ranges of test-macro bodies ([`test_macro`]), so pattern rules skip
+/// tests that share a file with production code.
+pub fn test_line_ranges(ctx: &ParseContext) -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    collect_test_ranges(ctx.tree.root_node(), ctx.source, &mut ranges);
+    ranges
+}
+
+fn collect_test_ranges(node: Node, src: &[u8], out: &mut Vec<(u32, u32)>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match test_macro(child, src) {
+            Some(test) => out.push((
+                (test.head.start_position().row + 1) as u32,
+                (test.body.end_position().row + 1) as u32,
+            )),
+            None => collect_test_ranges(child, src, out),
+        }
+    }
 }
 
 /// The C++ half of [`Dialect`]'s test-suffix check, on a lowercased file name.
@@ -71,6 +93,10 @@ fn collect_children(node: Node, src: &[u8], file_path: &str, out: &mut Vec<Extra
 /// One namespace-scope node. Anything without C++-specific handling goes to
 /// the shared C dispatcher.
 fn collect_node(node: Node, src: &[u8], file_path: &str, out: &mut Vec<ExtractedSymbol>) {
+    if let Some(test) = test_macro(node, src) {
+        out.push(extract_test(&test, src, file_path));
+        return;
+    }
     match node.kind() {
         "namespace_definition" => collect_namespace(node, src, file_path, out),
         "alias_declaration" => out.extend(extract_named_decl(node, src, SymbolKind::TypeAlias)),
@@ -83,12 +109,19 @@ fn collect_node(node: Node, src: &[u8], file_path: &str, out: &mut Vec<Extracted
         }),
         // `extern "C" { ... }` and `extern "C" int f();` add no scope.
         "linkage_specification" => {
+            let start = out.len();
             if let Some(body) = node.child_by_field_name("body") {
                 if body.kind() == "declaration_list" {
                     collect_children(body, src, file_path, out);
                 } else {
                     collect_node(body, src, file_path, out);
                 }
+            }
+            if node
+                .child_by_field_name("value")
+                .is_some_and(|v| node_text(v, src) == "\"C\"")
+            {
+                out[start..].iter_mut().for_each(mark_ffi_entry);
             }
         }
         // Include guards wrap whole headers; conditional blocks add no scope.
@@ -110,6 +143,124 @@ fn collect_function(node: Node, src: &[u8], file_path: &str, out: &mut Vec<Extra
         }
         _ => c::collect_symbol(node, src, file_path, Dialect::Cpp, out),
     }
+}
+
+/// A C-linkage function is callable from outside C++. A `static` one keeps
+/// internal linkage despite the block, so it is not an entry point.
+fn mark_ffi_entry(sym: &mut ExtractedSymbol) {
+    if sym.kind == SymbolKind::Function && sym.visibility.as_deref() != Some("private") {
+        sym.flags |= c::FLAG_FFI_ENTRY;
+    }
+}
+
+/// Test-registration macros whose use reads as a function definition
+/// (sutra/525 § Test macros): gtest, Catch2, doctest. Catch2's `SECTION` and
+/// doctest's `SUBCASE` live inside a test body and are not symbols.
+const TEST_MACROS: &[&str] = &[
+    "TEST",
+    "TEST_F",
+    "TEST_P",
+    "TYPED_TEST",
+    "TYPED_TEST_P",
+    "TEST_CASE",
+    "TEST_CASE_METHOD",
+    "TEST_CASE_FIXTURE",
+    "SCENARIO",
+];
+
+/// One test-macro use at namespace scope.
+struct TestMacro<'t> {
+    /// Where the symbol starts: the `function_definition`, or the
+    /// `expression_statement` holding the macro call when the body parsed as
+    /// its own sibling.
+    head: Node<'t>,
+    /// The macro call itself — `TEST(Suite, Name)` — which is the signature.
+    call: Node<'t>,
+    body: Node<'t>,
+    /// The macro arguments joined with `.`, string quotes and Catch2 tags
+    /// dropped: `Suite.Name`, `does x`, `Fixture.does y`.
+    name: String,
+}
+
+/// Recognize a test macro in either of its parse shapes. Identifier
+/// arguments (`TEST(Suite, Name) {`) parse as a `function_definition` with
+/// the arguments as parameter types and possibly no return type. A string
+/// argument (`TEST_CASE("does x") {`) can't be a parameter, so it parses as
+/// a call statement missing its `;`, followed by a bare compound statement.
+fn test_macro<'t>(node: Node<'t>, src: &[u8]) -> Option<TestMacro<'t>> {
+    let (call, macro_name, args, body) = match node.kind() {
+        "function_definition" => {
+            let declarator = node.child_by_field_name("declarator")?;
+            if declarator.kind() != "function_declarator" {
+                return None;
+            }
+            (
+                declarator,
+                declarator.child_by_field_name("declarator")?,
+                declarator.child_by_field_name("parameters")?,
+                node.child_by_field_name("body")?,
+            )
+        }
+        "expression_statement" => {
+            let call = node
+                .named_child(0)
+                .filter(|n| n.kind() == "call_expression")?;
+            let mut cursor = node.walk();
+            if !node.children(&mut cursor).any(|n| n.is_missing()) {
+                return None;
+            }
+            let mut body = node.next_sibling();
+            while let Some(n) = body.filter(|n| n.kind() == "comment") {
+                body = n.next_sibling();
+            }
+            (
+                call,
+                call.child_by_field_name("function")?,
+                call.child_by_field_name("arguments")?,
+                body.filter(|n| n.kind() == "compound_statement")?,
+            )
+        }
+        _ => return None,
+    };
+    if macro_name.kind() != "identifier" || !TEST_MACROS.contains(&node_text(macro_name, src)) {
+        return None;
+    }
+    let mut cursor = args.walk();
+    let parts: Vec<&str> = args
+        .named_children(&mut cursor)
+        .filter(|a| a.kind() != "comment")
+        .map(|a| {
+            let text = node_text(a, src).trim();
+            text.strip_prefix('"')
+                .and_then(|t| t.strip_suffix('"'))
+                .unwrap_or(text)
+        })
+        .filter(|a| !a.starts_with('['))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(TestMacro {
+        head: node,
+        call,
+        body,
+        name: parts.join("."),
+    })
+}
+
+/// A test macro as a `FLAG_TEST` function. Named with `.`, not `::`, so the
+/// suite doesn't read as a class qualifier to name resolution.
+fn extract_test(test: &TestMacro, src: &[u8], file_path: &str) -> ExtractedSymbol {
+    let mut sym = base_symbol(test.body, src, None, &test.name, SymbolKind::Function);
+    sym.start_line = test.head.start_position().row + 1;
+    sym.start_col = test.head.start_position().column;
+    let signature = node_text(test.call, src).trim().to_string();
+    set_signature(&mut sym, Some(signature));
+    sym.docstring = c::extract_docstring(test.head, src);
+    sym.flags = c::FLAG_TEST | c::extract_flags(file_path, &test.name, test.head, Dialect::Cpp);
+    sym.visibility = Some("pub".to_string());
+    score_body(&mut sym, test.body, src);
+    sym
 }
 
 /// `template<...> X` → the symbols `X` declares, spanning the template header
@@ -688,14 +839,7 @@ fn extract_callable(
         );
     }
     match body {
-        Some(body) => {
-            sym.cyclomatic = Some(complexity::cyclomatic(
-                body,
-                src,
-                Dialect::Cpp.language_id(),
-            ));
-            sym.cognitive = Some(complexity::cognitive(body, src, Dialect::Cpp.language_id()));
-        }
+        Some(body) => score_body(&mut sym, body, src),
         // `= default` / `= delete` define the function with no body to score.
         None if clause.is_some() => {
             sym.cyclomatic = Some(1);
@@ -844,6 +988,16 @@ fn base_symbol(
         flags: 0,
         language_attrs: None,
     }
+}
+
+/// Score `sym`'s complexity over its function body.
+fn score_body(sym: &mut ExtractedSymbol, body: Node, src: &[u8]) {
+    sym.cyclomatic = Some(complexity::cyclomatic(
+        body,
+        src,
+        Dialect::Cpp.language_id(),
+    ));
+    sym.cognitive = Some(complexity::cognitive(body, src, Dialect::Cpp.language_id()));
 }
 
 /// Set `sym`'s signature and the hash the shape diff compares.
@@ -1312,8 +1466,8 @@ fn qualifier_text(qualified: Node, name: Node, src: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::adapter::{CppAdapter, ParserPool};
-    use crate::parser::c::FLAG_TEST;
+    use crate::parser::adapter::{CppAdapter, LanguageAdapter, ParserPool};
+    use crate::parser::c::{FLAG_FFI_ENTRY, FLAG_TEST};
     use crate::parser::{RefContextKind, SymbolKind};
     use std::time::Duration;
 
@@ -1517,6 +1671,8 @@ mod tests {
         assert!(is_test_path("foo_test.c"));
         assert!(is_test_path("test_foo.cpp"));
         assert!(is_test_path("tests/bar.cpp"));
+        assert!(is_test_path("test/bar.cpp"));
+        assert!(is_test_path("llvm/unittests/ADT/APIntTest.cpp"));
         assert!(!is_test_path("main.cpp"));
         assert!(!is_test_path("db/version_set.cc"));
         // The suffix rule is scoped to C/C++ extensions: any_language_is_test_path
@@ -2517,5 +2673,115 @@ int f(int x) {
                 .iter()
                 .all(|x| x.resolved_local_target.is_none())
         );
+    }
+
+    // --- test macros and FFI flags (sutra/531) ---
+
+    #[test]
+    fn gtest_macros_named_suite_dot_test() {
+        let r = parse_cpp(
+            "TEST(Suite, Name) { int x = 1; }\n\
+             TEST_F(Fix, Runs) {}\n\
+             TEST_P(Param, Each) {}\n\
+             TYPED_TEST(Typed, Works) {}\n\
+             TYPED_TEST_P(TypedP, Works) {}",
+        );
+        for name in [
+            "Suite.Name",
+            "Fix.Runs",
+            "Param.Each",
+            "Typed.Works",
+            "TypedP.Works",
+        ] {
+            let s = sym(&r, name);
+            assert_eq!(s.kind, SymbolKind::Function, "{name}");
+            assert_ne!(s.flags & FLAG_TEST, 0, "{name}");
+        }
+        assert!(flat(&r).iter().all(|s| !s.short_name.starts_with("TEST")));
+        assert_eq!(
+            sym(&r, "Suite.Name").signature.as_deref(),
+            Some("TEST(Suite, Name)")
+        );
+    }
+
+    #[test]
+    fn catch2_and_doctest_string_names() {
+        let src = "// leads\nTEST_CASE(\"does x\", \"[tag][slow]\") {\n  SECTION(\"s\") { if (a) {} }\n}\n\
+                   TEST_CASE_METHOD(Fix, \"does y\") {}\n\
+                   TEST_CASE_FIXTURE(Fix, \"does z\") { SUBCASE(\"sub\") {} }\n\
+                   SCENARIO(\"story\") {}\n\
+                   int after() { return 0; }";
+        let r = parse_cpp(src);
+        let x = sym(&r, "does x");
+        assert_ne!(x.flags & FLAG_TEST, 0);
+        // The span runs from the macro call through the separately-parsed body.
+        assert_eq!((x.start_line, x.end_line), (2, 4));
+        assert_eq!(
+            x.signature.as_deref(),
+            Some("TEST_CASE(\"does x\", \"[tag][slow]\")")
+        );
+        assert_eq!(x.docstring.as_deref(), Some("leads"));
+        assert_eq!(x.cyclomatic, Some(2));
+        for name in ["Fix.does y", "Fix.does z", "story"] {
+            assert_ne!(sym(&r, name).flags & FLAG_TEST, 0, "{name}");
+        }
+        assert_eq!(sym(&r, "after").flags & FLAG_TEST, 0);
+        // SECTION / SUBCASE are not symbols.
+        assert!(
+            flat(&r)
+                .iter()
+                .all(|s| s.short_name != "s" && s.short_name != "sub")
+        );
+    }
+
+    #[test]
+    fn test_case_without_return_type_or_strings() {
+        // Hyprland's `TEST_CASE(name) {` — no type node at all.
+        let r = parse_cpp("TEST_CASE(name) { }");
+        assert_ne!(sym(&r, "name").flags & FLAG_TEST, 0);
+    }
+
+    #[test]
+    fn test_macros_inside_namespaces_qualify() {
+        let r = parse_cpp("namespace leveldb { TEST(Env, Read) {} TEST_CASE(\"str\") {} }");
+        sym(&r, "leveldb::Env.Read");
+        sym(&r, "leveldb::str");
+    }
+
+    #[test]
+    fn non_macro_call_statement_is_not_a_test() {
+        let r = parse_cpp("void f() { TEST_CASE(\"x\"); { } }\nFOO(\"y\") { }");
+        assert_eq!(flat(&r).len(), 1);
+        sym(&r, "f");
+    }
+
+    #[test]
+    fn test_line_ranges_cover_test_macros_only() {
+        let src = "int prod() { return 1; }\nTEST(A, B) {\n}\nTEST_CASE(\"c\")\n{\n}\nint more() { return 2; }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&CppAdapter.grammar()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let ctx = ParseContext {
+            source: src.as_bytes(),
+            tree: &tree,
+            file_path: "src/a.cpp",
+        };
+        assert_eq!(CppAdapter.test_line_ranges(&ctx), vec![(2, 3), (4, 6)]);
+    }
+
+    #[test]
+    fn extern_c_flags_ffi_entry() {
+        let r = parse_cpp(
+            "extern \"C\" void single() {}\n\
+             extern \"C\" {\n void block() {}\n static void hidden() {}\n}\n\
+             extern \"C++\" { void cxx() {} }\n\
+             void plain() {}",
+        );
+        assert_ne!(sym(&r, "single").flags & FLAG_FFI_ENTRY, 0);
+        assert_ne!(sym(&r, "block").flags & FLAG_FFI_ENTRY, 0);
+        assert_eq!(sym(&r, "block").visibility.as_deref(), Some("pub"));
+        assert_eq!(sym(&r, "hidden").flags & FLAG_FFI_ENTRY, 0);
+        assert_eq!(sym(&r, "cxx").flags & FLAG_FFI_ENTRY, 0);
+        assert_eq!(sym(&r, "plain").flags & FLAG_FFI_ENTRY, 0);
     }
 }

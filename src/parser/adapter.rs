@@ -400,6 +400,9 @@ impl LanguageAdapter for CppAdapter {
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::cpp::parse(ctx)
     }
+    fn test_line_ranges(&self, ctx: &ParseContext) -> Vec<(u32, u32)> {
+        super::cpp::test_line_ranges(ctx)
+    }
     fn is_test_path(&self, path: &str) -> bool {
         super::cpp::is_test_path(path)
     }

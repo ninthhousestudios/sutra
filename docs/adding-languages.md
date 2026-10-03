@@ -406,20 +406,44 @@ bound plays. It isn't a type, so `TypeAlias` would misdescribe it.
 
 ### Test macros
 
-Some test macros parse as a `function_definition`: `TEST`, `TEST_F`,
-`TEST_P`, `TYPED_TEST`, `TEST_CASE` and `SCENARIO`. When the declarator name
-is one of them, the macro name isn't used as the symbol name. Instead:
+Test-registration macros look like function definitions: gtest `TEST`,
+`TEST_F`, `TEST_P`, `TYPED_TEST` and `TYPED_TEST_P`, Catch2 `TEST_CASE`,
+`TEST_CASE_METHOD` and `SCENARIO`, and doctest `TEST_CASE` and
+`TEST_CASE_FIXTURE`. The grammar parses them in one of two shapes,
+depending on the arguments:
 
-- The symbol is named from the macro's arguments, joined with `.`.
-  String-literal quotes are stripped. So `TEST(Suite, Name)` becomes
-  `Suite.Name` and `TEST_CASE("does x")` becomes `does x`.
+- **Identifier arguments** (`TEST(Suite, Name) {`) parse as a
+  `function_definition`. The arguments become parameter types, and there may
+  be no return type. Hyprland's `TEST_CASE(name) {` is an example.
+- **A string argument** (`TEST_CASE("does x") {`) can't be a parameter. It
+  parses as a call `expression_statement` with a MISSING `;`, followed by a
+  sibling `compound_statement` that holds the body. The symbol spans both
+  nodes.
+
+In either shape, the macro name isn't used as the symbol name. Instead:
+
+- The symbol is a `Function` named from the macro's arguments, joined with
+  `.`. String-literal quotes are stripped, and Catch2 tag arguments
+  (`"[tag]"`) are dropped. So `TEST(Suite, Name)` becomes `Suite.Name`,
+  `TEST_CASE("does x", "[fast]")` becomes `does x`, and
+  `TEST_CASE_METHOD(Fix, "does y")` becomes `Fix.does y`.
 - `FLAG_TEST` is set.
-- The return type may be missing. Hyprland's `TEST_CASE(name) {` parses with a
-  MISSING type node.
 - The separator is `.`, not `::`, so the suite doesn't read as a class
   qualifier to name resolution.
+- `test_line_ranges` returns the same spans. Pattern rules then skip tests
+  that share a file with production code.
+
+Catch2's `SECTION` and doctest's `SUBCASE` live inside a test body, so they
+are not symbols.
 
 Without this, `TEST` becomes a name collision hundreds of entries wide.
+
+### FFI entry points
+
+A non-`static` function defined inside `extern "C"` gets `FLAG_FFI_ENTRY`.
+This covers both the block form and the single-declaration form. A `static`
+function inside the block still has internal linkage, so it isn't flagged.
+`extern "C++"` isn't flagged either.
 
 ### Module boundary strength
 
