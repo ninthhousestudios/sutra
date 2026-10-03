@@ -1,14 +1,20 @@
 //! C++ adapter. Layered on `c.rs` the way `typescript.rs` layers on
 //! `javascript.rs`: the C subset (functions, structs, enums, typedefs, macros,
-//! globals, includes, references) goes through the C extractors with
-//! [`Dialect::Cpp`], so the two languages cannot drift apart on shared syntax.
+//! globals, includes) goes through the C extractors with [`Dialect::Cpp`], so
+//! the two languages cannot drift apart on shared syntax. References have
+//! their own walker here (qualifiers, receivers, scoped locals), sharing the
+//! C definition-name table.
 //! Design decisions: `docs/adding-languages.md` § C++ (sutra/525).
 
 use crate::error::Result;
 use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::c::{self, Dialect};
-use crate::parser::{ExtractedSymbol, ParseResult, SymbolKind, complexity, structural_hash};
-use tree_sitter::Node;
+use crate::parser::rust::{LOCAL_BINDING_SENTINEL, strip_generic_args};
+use crate::parser::{
+    ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind, complexity,
+    structural_hash,
+};
+use tree_sitter::{Node, TreeCursor};
 
 /// Extensions the C++ adapter owns outright. `.h` and `.c` are shared with
 /// the C adapter and routed per workspace (sutra/525), so they are not here.
@@ -918,6 +924,389 @@ fn attrs_json(attrs: serde_json::Map<String, serde_json::Value>) -> Option<Strin
         serde_json::to_string(&attrs)
             .expect("invariant: a string-keyed JSON map always serializes"),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Reference extraction
+// ---------------------------------------------------------------------------
+//
+// The C walker's positions (calls, field access, type uses, compound
+// literals) plus what C++ adds on top: the last segment of a qualified name
+// carries the path before it as `qualifier`, member access carries its
+// `receiver`, and names bound by an enclosing scope (parameters, locals,
+// template parameters, lambda captures) are marked as local bindings so the
+// resolver never binds them globally.
+
+/// Scopes that open a region of local bindings.
+const SCOPE_KINDS: &[&str] = &[
+    "function_definition",
+    "lambda_expression",
+    "template_declaration",
+    "compound_statement",
+    "for_statement",
+    "for_range_loop",
+    "catch_clause",
+];
+
+/// Scopes whose `parameter_declaration`s bind names for the scope's body. A
+/// prototype's parameters (`void f(int g);`) are in none of them and bind
+/// nothing.
+const PARAM_SCOPES: &[&str] = &[
+    "function_definition",
+    "lambda_expression",
+    "template_declaration",
+    "catch_clause",
+];
+
+/// The named casts parse as template function calls; they call nothing.
+const CAST_KEYWORDS: &[&str] = &[
+    "static_cast",
+    "dynamic_cast",
+    "reinterpret_cast",
+    "const_cast",
+];
+
+pub(super) fn collect_references(root: Node, src: &[u8]) -> Vec<ExtractedRef> {
+    let mut walk = RefWalk {
+        src,
+        refs: Vec::new(),
+        anc: Vec::new(),
+        locals: Vec::new(),
+        scopes: Vec::new(),
+    };
+    walk.visit(&mut root.walk());
+    walk.refs
+}
+
+struct RefWalk<'t> {
+    src: &'t [u8],
+    refs: Vec<ExtractedRef>,
+    /// Ancestors of the node being visited, root first. `Node::parent`
+    /// re-descends from the root, which is too slow per identifier.
+    anc: Vec<Node<'t>>,
+    /// Names bound in the open scopes, innermost last.
+    locals: Vec<&'t str>,
+    /// Open scopes: the scope node's kind and `locals.len()` on entry.
+    scopes: Vec<(&'static str, usize)>,
+}
+
+impl<'t> RefWalk<'t> {
+    fn visit(&mut self, cursor: &mut TreeCursor<'t>) {
+        let node = cursor.node();
+        let kind = node.kind();
+        let opens_scope = SCOPE_KINDS.contains(&kind);
+        if opens_scope {
+            self.scopes.push((kind, self.locals.len()));
+        }
+        self.bind(node);
+        match kind {
+            "identifier" | "type_identifier" => self.name_ref(node),
+            "field_identifier" => self.member_ref(node),
+            _ => {}
+        }
+
+        if cursor.goto_first_child() {
+            self.anc.push(node);
+            loop {
+                self.visit(cursor);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            self.anc.pop();
+            cursor.goto_parent();
+        }
+
+        if opens_scope && let Some((_, mark)) = self.scopes.pop() {
+            self.locals.truncate(mark);
+        }
+    }
+
+    fn innermost_scope(&self) -> Option<&'static str> {
+        self.scopes.last().map(|&(kind, _)| kind)
+    }
+
+    /// Record the names `node` binds in the innermost open scope.
+    fn bind(&mut self, node: Node<'t>) {
+        let scope = self.innermost_scope();
+        match node.kind() {
+            "parameter_declaration"
+            | "optional_parameter_declaration"
+            | "variadic_parameter_declaration"
+                if scope.is_some_and(|s| PARAM_SCOPES.contains(&s)) =>
+            {
+                if let Some(d) = node.child_by_field_name("declarator") {
+                    self.bind_declarator(d);
+                }
+            }
+            "type_parameter_declaration" | "variadic_type_parameter_declaration" => {
+                if let Some(name) = node
+                    .named_children(&mut node.walk())
+                    .find(|c| c.kind() == "type_identifier")
+                {
+                    self.locals.push(node_text(name, self.src));
+                }
+            }
+            "optional_type_parameter_declaration" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    self.locals.push(node_text(name, self.src));
+                }
+            }
+            // A declaration directly under a template is a variable
+            // template, which is global.
+            "declaration" if scope.is_some_and(|s| s != "template_declaration") => {
+                for d in c::field_children(node, "declarator") {
+                    self.bind_declarator(d);
+                }
+            }
+            "for_range_loop" => {
+                if let Some(d) = node.child_by_field_name("declarator") {
+                    self.bind_declarator(d);
+                }
+            }
+            "lambda_capture_specifier" => {
+                let mut cursor = node.walk();
+                for capture in node.named_children(&mut cursor) {
+                    let name = match capture.kind() {
+                        "identifier" => Some(capture),
+                        // `[x = expr]` and `[&x = expr]`.
+                        "lambda_capture_initializer" => capture.child_by_field_name("left"),
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        self.locals.push(node_text(name, self.src));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Bind the name a declarator introduces, or every name of a structured
+    /// binding (`auto [a, b] = ...`, `auto& [k, v] : m`).
+    fn bind_declarator(&mut self, declarator: Node<'t>) {
+        let mut d = declarator;
+        loop {
+            match d.kind() {
+                "init_declarator" => match d.child_by_field_name("declarator") {
+                    Some(inner) => d = inner,
+                    None => return,
+                },
+                "reference_declarator" => match d.named_child(0) {
+                    Some(inner) => d = inner,
+                    None => return,
+                },
+                "structured_binding_declarator" => {
+                    let mut cursor = d.walk();
+                    for name in d.named_children(&mut cursor) {
+                        if name.kind() == "identifier" {
+                            self.locals.push(node_text(name, self.src));
+                        }
+                    }
+                    return;
+                }
+                _ => break,
+            }
+        }
+        if let Some(name) = c::find_name_node_in_declarator(d) {
+            self.locals.push(node_text(name, self.src));
+        }
+    }
+
+    fn parent(&self) -> Option<Node<'t>> {
+        self.anc.last().copied()
+    }
+
+    /// An `identifier` or `type_identifier`: a call, construction or type use,
+    /// with the qualified-name path before it.
+    fn name_ref(&mut self, node: Node<'t>) {
+        let parent = self.parent();
+        if c::is_definition_name(node, parent) || is_template_param_name(node, parent) {
+            return;
+        }
+        let name = node_text(node, self.src);
+        let NameHead {
+            head,
+            parent: head_parent,
+            qualified,
+        } = self.name_head(node);
+        let context_kind = if node.kind() == "identifier" {
+            if CAST_KEYWORDS.contains(&name) || !is_callee(head, head_parent) {
+                return;
+            }
+            RefContextKind::Call
+        } else if is_construction_type(head, head_parent) {
+            RefContextKind::Construction
+        } else {
+            RefContextKind::TypeUse
+        };
+        let qualifier = qualified.map(|q| qualifier_text(q, node, self.src));
+        let resolved_local_target = (qualifier.is_none() && self.locals.contains(&name))
+            .then(|| LOCAL_BINDING_SENTINEL.to_string());
+        self.refs.push(ExtractedRef {
+            name: name.to_string(),
+            line: node.start_position().row + 1,
+            col: node.start_position().column,
+            context_kind,
+            resolved_local_target,
+            receiver: None,
+            qualifier,
+        });
+    }
+
+    /// The outermost node `node` names: climbs through template arguments
+    /// (`make<int>`), dependent names (`T::template m`) and qualified names
+    /// (`ns::f`) for which `node` is the final segment.
+    fn name_head(&self, node: Node<'t>) -> NameHead<'t> {
+        let mut head = node;
+        let mut qualified = None;
+        for &parent in self.anc.iter().rev() {
+            let is_name = parent
+                .child_by_field_name("name")
+                .is_some_and(|n| n.id() == head.id());
+            match parent.kind() {
+                "qualified_identifier" if is_name => qualified = Some(parent),
+                "template_function" | "template_type" if is_name => {}
+                "dependent_name" | "dependent_type" => {}
+                _ => {
+                    return NameHead {
+                        head,
+                        parent: Some(parent),
+                        qualified,
+                    };
+                }
+            }
+            head = parent;
+        }
+        NameHead {
+            head,
+            parent: None,
+            qualified,
+        }
+    }
+
+    /// A `field_identifier` of a member access: a method call or field
+    /// access through its receiver (`obj.m()`, `p->m()`, `this->x`).
+    fn member_ref(&mut self, node: Node<'t>) {
+        let mut head = node;
+        let mut levels = 0;
+        for &parent in self.anc.iter().rev() {
+            match parent.kind() {
+                "template_method" | "dependent_name" => {
+                    head = parent;
+                    levels += 1;
+                }
+                _ => break,
+            }
+        }
+        let Some(access) = self
+            .anc
+            .len()
+            .checked_sub(levels + 1)
+            .map(|i| self.anc[i])
+            .filter(|p| p.kind() == "field_expression")
+            .filter(|p| {
+                p.child_by_field_name("field")
+                    .is_some_and(|f| f.id() == head.id())
+            })
+        else {
+            return;
+        };
+        let receiver = access
+            .child_by_field_name("argument")
+            .map(|r| match r.kind() {
+                "identifier" | "this" => node_text(r, self.src).to_string(),
+                _ => String::new(),
+            });
+        let access_parent = self.anc.len().checked_sub(levels + 2).map(|i| self.anc[i]);
+        let context_kind = if is_callee(access, access_parent) {
+            RefContextKind::Call
+        } else {
+            RefContextKind::FieldAccess
+        };
+        self.refs.push(ExtractedRef {
+            name: node_text(node, self.src).to_string(),
+            line: node.start_position().row + 1,
+            col: node.start_position().column,
+            context_kind,
+            resolved_local_target: None,
+            receiver,
+            qualifier: None,
+        });
+    }
+}
+
+/// What a name segment names as a whole: see [`RefWalk::name_head`].
+struct NameHead<'t> {
+    head: Node<'t>,
+    /// The node `head` sits in.
+    parent: Option<Node<'t>>,
+    /// The outermost `qualified_identifier` the name is the last segment of.
+    qualified: Option<Node<'t>>,
+}
+
+/// The name a template type parameter declares (`T` in `template <class T>`).
+fn is_template_param_name(node: Node, parent: Option<Node>) -> bool {
+    parent.is_some_and(|p| {
+        matches!(
+            p.kind(),
+            "type_parameter_declaration"
+                | "variadic_type_parameter_declaration"
+                | "optional_type_parameter_declaration"
+        ) && p
+            .child_by_field_name("default_type")
+            .is_none_or(|d| d.id() != node.id())
+    })
+}
+
+/// Whether `head` is the function a `call_expression` invokes.
+fn is_callee(head: Node, parent: Option<Node>) -> bool {
+    parent.is_some_and(|p| {
+        p.kind() == "call_expression"
+            && p.child_by_field_name("function")
+                .is_some_and(|f| f.id() == head.id())
+    })
+}
+
+/// Whether type `head` is instantiated where it is named: `new Foo(..)`,
+/// `Foo{..}`, or a declaration initialized with arguments (`Foo a{1};`,
+/// `Foo b(2);`). A bare `Foo c;` stays a type use.
+fn is_construction_type(head: Node, parent: Option<Node>) -> bool {
+    let Some(parent) = parent else {
+        return false;
+    };
+    let is_type = parent
+        .child_by_field_name("type")
+        .is_some_and(|t| t.id() == head.id());
+    if !is_type {
+        return false;
+    }
+    match parent.kind() {
+        "new_expression" | "compound_literal_expression" => true,
+        "declaration" => c::field_children(parent, "declarator").iter().any(|d| {
+            d.kind() == "init_declarator"
+                && d.child_by_field_name("value")
+                    .is_some_and(|v| matches!(v.kind(), "initializer_list" | "argument_list"))
+        }),
+        _ => false,
+    }
+}
+
+/// The path before `name` in `qualified`, template arguments stripped:
+/// `Foo<T>::make` → `Foo`, `T::template m` → `T`. A leading `::` (global
+/// scope) is kept, so `::h()` has qualifier `::` and `::ns::g()` has `::ns`.
+fn qualifier_text(qualified: Node, name: Node, src: &[u8]) -> String {
+    let prefix = std::str::from_utf8(&src[qualified.start_byte()..name.start_byte()])
+        .expect("invariant: node boundaries fall on char boundaries of UTF-8 source");
+    let global = prefix.trim_start().starts_with("::");
+    let stripped = strip_generic_args(prefix);
+    let segments: Vec<&str> = stripped
+        .split("::")
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "template")
+        .collect();
+    let path = segments.join("::");
+    if global { format!("::{path}") } else { path }
 }
 
 #[cfg(test)]
@@ -1948,5 +2337,185 @@ int f(int x) {
         );
         let names: Vec<_> = flat(&r).iter().map(|s| s.qualified_name.as_str()).collect();
         assert_eq!(names, ["add", "run"]);
+    }
+
+    // --- References: qualifiers, receivers, construction, locals ----------
+
+    fn the_ref<'a>(r: &'a ParseResult, name: &str) -> &'a crate::parser::ExtractedRef {
+        let found: Vec<_> = r.references.iter().filter(|x| x.name == name).collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "expected one ref named {name}: {:?}",
+            r.references
+        );
+        found[0]
+    }
+
+    #[test]
+    fn qualified_call_splits_name_and_qualifier() {
+        let r = parse_cpp(
+            "void f() { ns::g(); ::h(); ::top::k(); a::b::c(); Foo::make<int>(); Bar<int>::build(); }",
+        );
+        for (name, qualifier) in [
+            ("g", "ns"),
+            ("h", "::"),
+            ("k", "::top"),
+            ("c", "a::b"),
+            ("make", "Foo"),
+            ("build", "Bar"),
+        ] {
+            let x = the_ref(&r, name);
+            assert_eq!(x.context_kind, RefContextKind::Call, "{name}");
+            assert_eq!(x.qualifier.as_deref(), Some(qualifier), "{name}");
+            assert_eq!(x.receiver, None, "{name}");
+        }
+        // Namespace segments are the qualifier, never refs of their own.
+        assert!(
+            r.references
+                .iter()
+                .all(|x| !["ns", "a", "b", "Foo", "top"].contains(&x.name.as_str()))
+        );
+    }
+
+    #[test]
+    fn qualified_type_carries_qualifier() {
+        let r = parse_cpp("void f(std::vector<Item> v, ::Glob g) {}");
+        let vector = the_ref(&r, "vector");
+        assert_eq!(vector.context_kind, RefContextKind::TypeUse);
+        assert_eq!(vector.qualifier.as_deref(), Some("std"));
+        assert_eq!(the_ref(&r, "Glob").qualifier.as_deref(), Some("::"));
+        let item = the_ref(&r, "Item");
+        assert_eq!(item.context_kind, RefContextKind::TypeUse);
+        assert_eq!(item.qualifier, None);
+    }
+
+    #[test]
+    fn member_calls_record_receiver() {
+        let r = parse_cpp(
+            "void f() { obj.m(); p->n(); this->x = 1; a.b().c(); obj.template get<0>(); }",
+        );
+        for (name, kind, receiver) in [
+            ("m", RefContextKind::Call, "obj"),
+            ("n", RefContextKind::Call, "p"),
+            ("x", RefContextKind::FieldAccess, "this"),
+            ("b", RefContextKind::Call, "a"),
+            ("c", RefContextKind::Call, ""),
+            ("get", RefContextKind::Call, "obj"),
+        ] {
+            let x = the_ref(&r, name);
+            assert_eq!(x.context_kind, kind, "{name}");
+            assert_eq!(x.receiver.as_deref(), Some(receiver), "{name}");
+            assert_eq!(x.qualifier, None, "{name}");
+        }
+    }
+
+    #[test]
+    fn construction_forms() {
+        let r = parse_cpp(
+            "void f() { auto q = new Heap(1); Braced a{1}; Parens b(2); auto c = Literal{3}; \
+             ns::Widget w{4}; Plain d; }",
+        );
+        for name in ["Heap", "Braced", "Parens", "Literal", "Widget"] {
+            assert_eq!(
+                the_ref(&r, name).context_kind,
+                RefContextKind::Construction,
+                "{name}"
+            );
+        }
+        assert_eq!(the_ref(&r, "Widget").qualifier.as_deref(), Some("ns"));
+        assert_eq!(the_ref(&r, "Plain").context_kind, RefContextKind::TypeUse);
+    }
+
+    #[test]
+    fn template_arguments_and_casts_are_type_uses() {
+        let r = parse_cpp(
+            "void f() { auto e = std::make_unique<Made>(5); auto s = static_cast<Cast>(e); \
+             auto t = (CStyle)e; }",
+        );
+        for name in ["Made", "Cast", "CStyle"] {
+            assert_eq!(
+                the_ref(&r, name).context_kind,
+                RefContextKind::TypeUse,
+                "{name}"
+            );
+        }
+        assert_eq!(the_ref(&r, "make_unique").qualifier.as_deref(), Some("std"));
+        assert!(r.references.iter().all(|x| x.name != "static_cast"));
+    }
+
+    #[test]
+    fn definition_names_are_not_refs() {
+        let r = parse_cpp(
+            "template <typename T, class U = int> class Box : public Base { \
+             public: Box(int a); ~Box(); Box& operator=(const Box&); T val; };\n\
+             Box::~Box() {}\nusing Alias = Box;\nnamespace ns { void free_fn(); }",
+        );
+        let names: Vec<&str> = r.references.iter().map(|x| x.name.as_str()).collect();
+        for def in ["Alias", "U", "free_fn", "operator=", "a", "val"] {
+            assert!(!names.contains(&def), "{def} in {names:?}");
+        }
+        // Uses remain: the base class, `Box&`/`const Box&`, `Alias = Box`.
+        assert!(refs_of(&r, RefContextKind::TypeUse).contains(&"Base"));
+        assert_eq!(
+            names.iter().filter(|n| **n == "Box").count(),
+            3,
+            "{names:?}"
+        );
+        // `T` is declared once (not a ref) and used once (a local ref).
+        assert_eq!(names.iter().filter(|n| **n == "T").count(), 1);
+    }
+
+    #[test]
+    fn scoped_bindings_are_local() {
+        let r = parse_cpp(
+            "template <typename T> T apply(T x, Fn cb) {\n\
+               cb();\n\
+               auto lam = [cb, n = 1](int z) { cb(); return z; };\n\
+               lam();\n\
+               auto [first, second] = pair();\n\
+               first();\n\
+               for (auto& each : all) { each(); }\n\
+               global();\n\
+               return T{};\n\
+             }",
+        );
+        let local = |name: &str| {
+            r.references
+                .iter()
+                .filter(|x| x.name == name)
+                .all(|x| x.resolved_local_target.as_deref() == Some(LOCAL_BINDING_SENTINEL))
+        };
+        for name in ["cb", "lam", "first", "each", "T"] {
+            assert!(
+                r.references.iter().any(|x| x.name == name),
+                "{name} missing"
+            );
+            assert!(local(name), "{name} not local: {:?}", r.references);
+        }
+        for name in ["global", "pair", "Fn"] {
+            assert_eq!(the_ref(&r, name).resolved_local_target, None, "{name}");
+        }
+    }
+
+    #[test]
+    fn bindings_do_not_leak_out_of_scope() {
+        let r = parse_cpp(
+            "void proto(int g);\nvoid a(int h) {}\nvoid b() { { auto k = 1; } g(); h(); k(); }\n\
+             template <typename V> struct S {};\nV make();",
+        );
+        for name in ["g", "h", "k", "V"] {
+            assert_eq!(the_ref(&r, name).resolved_local_target, None, "{name}");
+        }
+    }
+
+    #[test]
+    fn qualified_name_is_never_local() {
+        let r = parse_cpp("void f(int g) { ns::g(); obj.g(); }");
+        assert!(
+            r.references
+                .iter()
+                .all(|x| x.resolved_local_target.is_none())
+        );
     }
 }

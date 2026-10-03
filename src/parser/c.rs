@@ -19,8 +19,14 @@ pub(super) fn parse_dialect(ctx: &ParseContext, dialect: Dialect) -> Result<Pars
 
     let symbols = collect_symbols(root, src, file_path, dialect);
 
-    let mut references = Vec::new();
-    collect_references(&mut references, root, src);
+    let references = match dialect {
+        Dialect::C => {
+            let mut references = Vec::new();
+            collect_references(&mut references, root, src);
+            references
+        }
+        Dialect::Cpp => super::cpp::collect_references(root, src),
+    };
 
     let imports = collect_includes(root, src);
 
@@ -875,7 +881,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
     let kind = node.kind();
 
     match kind {
-        "identifier" if !is_definition_name(node) => {
+        "identifier" if !is_definition_name(node, node.parent()) => {
             let name = node_text(node, src);
             let context_kind = classify_ref_context(node);
             if context_kind != RefContextKind::Other {
@@ -890,7 +896,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 });
             }
         }
-        "type_identifier" if !is_definition_name(node) => {
+        "type_identifier" if !is_definition_name(node, node.parent()) => {
             let name = node_text(node, src);
             let context_kind = classify_ref_context(node);
             if context_kind != RefContextKind::Other {
@@ -943,8 +949,11 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
     }
 }
 
-fn is_definition_name(node: Node) -> bool {
-    let Some(parent) = node.parent() else {
+/// Whether `node`, whose parent is `parent`, is the name a declaration
+/// introduces rather than a use. The parent is passed in so the C++ walker can
+/// supply it from its ancestor stack.
+pub(super) fn is_definition_name(node: Node, parent: Option<Node>) -> bool {
+    let Some(parent) = parent else {
         return false;
     };
     match parent.kind() {
