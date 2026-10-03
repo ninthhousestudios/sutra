@@ -464,6 +464,22 @@ pub fn any_language_is_test_path(path: &str) -> bool {
         .any_is_test_path(path)
 }
 
+/// Language id for a path, derived from the registered adapters' extension map.
+///
+/// Deliberately not a literal. Hardcoded ext→language tables drifted from the
+/// registry three times: the lessons language filter (sutra/280), the guard's
+/// `parse_proposed` (rust/dart only, so no imports were extracted for other
+/// languages), and `symbol_diff` (missing JS/TS, so symbol diffs silently
+/// reported no changes — sutra/526). Every path-only caller goes through here
+/// so a newly registered adapter is picked up everywhere at once.
+pub fn language_for_path(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path).extension()?.to_str()?;
+    PATH_REGISTRY
+        .get_or_init(default_registry)
+        .adapter_for_extension(ext)
+        .map(|a| a.language_id())
+}
+
 pub fn default_registry() -> LanguageRegistry {
     let mut r = LanguageRegistry::new();
     r.register(Box::new(RustAdapter));
@@ -478,6 +494,35 @@ pub fn default_registry() -> LanguageRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_for_path_covers_every_registered_adapter() {
+        // Pinned against the registry rather than a literal list: if an adapter
+        // is added and this fails, the fix is to extend the expectation, not to
+        // re-hardcode the mapping.
+        for (path, want) in [
+            ("src/lib.rs", "rust"),
+            ("lib/main.dart", "dart"),
+            ("src/parse.c", "c"),
+            ("src/parse.h", "c"),
+            ("app/models.py", "python"),
+            ("web/index.js", "javascript"),
+            ("web/App.jsx", "javascript"),
+            ("web/index.ts", "typescript"),
+            ("web/App.tsx", "typescript"),
+        ] {
+            assert_eq!(
+                language_for_path(path),
+                Some(want),
+                "{path} should map to {want}"
+            );
+        }
+        assert_eq!(language_for_path("README.md"), None);
+        assert_eq!(language_for_path("Makefile"), None);
+        // .pyi is pattern-eligible but not indexed (sutra/275) — the Python
+        // adapter does not claim it, and path lookup must not either.
+        assert_eq!(language_for_path("stubs/foo.pyi"), None);
+    }
 
     struct TestAdapter;
 

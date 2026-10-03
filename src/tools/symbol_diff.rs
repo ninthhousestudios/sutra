@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::git::{self, DiffFileEntry};
+use crate::parser::adapter::language_for_path;
 use crate::parser::{
     self, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind, flatten_symbols,
 };
@@ -724,17 +725,6 @@ fn collapse_unmatched(
     out
 }
 
-fn language_for_path(path: &str) -> Option<&'static str> {
-    let ext = Path::new(path).extension()?.to_str()?;
-    match ext {
-        "rs" => Some("rust"),
-        "dart" => Some("dart"),
-        "c" | "h" => Some("c"),
-        "py" => Some("python"),
-        _ => None,
-    }
-}
-
 pub fn diff_file(
     workspace_root: &Path,
     path: &str,
@@ -1412,6 +1402,16 @@ mod tests {
     #[test]
     fn test_language_for_path_python() {
         assert_eq!(super::language_for_path("scripts/build.py"), Some("python"));
+    }
+
+    #[test]
+    fn test_language_for_path_js_ts() {
+        // sutra/526: JS/TS were missing from the old literal table, so
+        // diff_file silently returned no changes for them.
+        assert_eq!(super::language_for_path("web/index.js"), Some("javascript"));
+        assert_eq!(super::language_for_path("web/App.jsx"), Some("javascript"));
+        assert_eq!(super::language_for_path("web/index.ts"), Some("typescript"));
+        assert_eq!(super::language_for_path("web/App.tsx"), Some("typescript"));
     }
 
     #[test]
