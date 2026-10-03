@@ -308,8 +308,7 @@ fn parse_single_file(
         .to_string_lossy()
         .to_string();
 
-    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let adapter = match registry.adapter_for_extension(ext) {
+    let adapter = match registry.adapter_for_path(file_path) {
         Some(a) => a,
         None => return Ok(None),
     };

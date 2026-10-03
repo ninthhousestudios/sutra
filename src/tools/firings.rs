@@ -327,8 +327,7 @@ impl Copies {
     ) -> Self {
         let in_file = count_snippet(text, 1..usize::MAX, snippet);
         let in_symbol = symbol.and_then(|name| {
-            let ext = Path::new(path).extension()?.to_str()?;
-            let adapter = registry.adapter_for_extension(ext)?;
+            let adapter = registry.adapter_for_path(path)?;
             // swallow: a historical snapshot that no longer parses has no
             // symbol count, and `keeps` then compares whole-file counts on
             // both sides, so the fallback stays consistent.
@@ -487,10 +486,7 @@ fn pattern_sites<'f>(
         let Some(text) = content_of(path) else {
             continue;
         };
-        let adapter = Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(|ext| registry.adapter_for_extension(ext));
+        let adapter = registry.adapter_for_path(path);
         let spans: Vec<SymbolSpan> = match adapter {
             Some(adapter) => symbol_spans(&mut pool, adapter, &text, path)?,
             None => Vec::new(),

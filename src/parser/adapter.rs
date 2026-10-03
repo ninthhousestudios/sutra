@@ -236,6 +236,16 @@ impl LanguageRegistry {
             .map(|&idx| self.adapters[idx].as_ref())
     }
 
+    /// The adapter claiming `path`'s extension. `None` when the path has no
+    /// extension, a non-UTF-8 one, or one no adapter registers.
+    pub fn adapter_for_path(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Option<&dyn LanguageAdapter> {
+        let ext = path.as_ref().extension()?.to_str()?;
+        self.adapter_for_extension(ext)
+    }
+
     pub fn adapter_for_language(&self, lang: &str) -> Option<&dyn LanguageAdapter> {
         self.adapters
             .iter()
@@ -473,10 +483,9 @@ pub fn any_language_is_test_path(path: &str) -> bool {
 /// reported no changes — sutra/526). Every path-only caller goes through here
 /// so a newly registered adapter is picked up everywhere at once.
 pub fn language_for_path(path: &str) -> Option<&'static str> {
-    let ext = std::path::Path::new(path).extension()?.to_str()?;
     PATH_REGISTRY
         .get_or_init(default_registry)
-        .adapter_for_extension(ext)
+        .adapter_for_path(path)
         .map(|a| a.language_id())
 }
 
@@ -566,6 +575,25 @@ mod tests {
         assert!(result.parsed_ok);
 
         assert!(registry.adapter_for_extension("unknown").is_none());
+    }
+
+    #[test]
+    fn adapter_for_path_resolves_by_extension() {
+        let mut registry = LanguageRegistry::new();
+        registry.register(Box::new(TestAdapter));
+
+        let by_str = registry
+            .adapter_for_path("src/a.tst")
+            .map(|a| a.language_id());
+        assert_eq!(by_str, Some("test"));
+        let by_path = registry
+            .adapter_for_path(std::path::Path::new("/abs/b.test"))
+            .map(|a| a.language_id());
+        assert_eq!(by_path, Some("test"));
+
+        assert!(registry.adapter_for_path("src/a.unknown").is_none());
+        assert!(registry.adapter_for_path("Makefile").is_none());
+        assert!(registry.adapter_for_path("src/.tst").is_none());
     }
 
     #[test]

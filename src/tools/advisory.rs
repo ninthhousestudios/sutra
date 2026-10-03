@@ -14,7 +14,7 @@ use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::{self, FileStatus};
 use crate::git;
-use crate::parser::adapter::{LanguageAdapter, LanguageRegistry};
+use crate::parser::adapter::LanguageRegistry;
 use crate::tools::review::DiffScope;
 
 /// Why the index cannot hold the reviewed side of `scope` at all: the diff
@@ -24,14 +24,6 @@ pub(crate) fn index_cannot_hold(workspace_root: &Path, scope: &DiffScope) -> Opt
     (git::head_commit_hash(workspace_root).as_deref() != Some(rev)).then(|| {
         format!("the index holds the worktree, not {rev}; review a diff that ends at HEAD")
     })
-}
-
-pub(crate) fn adapter_for<'r>(
-    registry: &'r LanguageRegistry,
-    path: &str,
-) -> Option<&'r dyn LanguageAdapter> {
-    let ext = Path::new(path).extension()?.to_str()?;
-    registry.adapter_for_extension(ext)
 }
 
 /// Why the index cannot stand for the reviewed side of `path`, if it cannot:
@@ -93,7 +85,7 @@ pub(crate) fn dirty_outside_diff(
         if in_diff.contains(path) || dirty.contains(path) {
             continue;
         }
-        if let Some(adapter) = adapter_for(registry, path)
+        if let Some(adapter) = registry.adapter_for_path(path)
             && db.indexes_language(adapter.language_id())?
         {
             dirty.insert(path);

@@ -30,7 +30,7 @@ use crate::error::Result;
 use crate::git;
 use crate::parser::adapter::{LanguageRegistry, ParserPool};
 use crate::parser::{self, ParseResult, flatten_symbols};
-use crate::tools::advisory::{self, adapter_for, dirty_outside_diff, index_mismatch};
+use crate::tools::advisory::{self, dirty_outside_diff, index_mismatch};
 use crate::tools::firings::ReviewedPatch;
 use crate::tools::review::DiffScope;
 use crate::tools::sibling_pattern::read_sides;
@@ -180,7 +180,11 @@ pub fn analyze(
     scope: &DiffScope,
     registry: &LanguageRegistry,
 ) -> Result<OrphanReport> {
-    let is_test_path = |p: &str| adapter_for(registry, p).is_some_and(|a| a.is_test_path(p));
+    let is_test_path = |p: &str| {
+        registry
+            .adapter_for_path(p)
+            .is_some_and(|a| a.is_test_path(p))
+    };
     let file_hunks = git::git_diff_hunks(
         workspace_root,
         &scope.base_revision,
@@ -198,7 +202,7 @@ pub fn analyze(
         let Some(path) = fh.new_path.as_deref().or(fh.old_path.as_deref()) else {
             continue;
         };
-        let Some(adapter) = adapter_for(registry, path) else {
+        let Some(adapter) = registry.adapter_for_path(path) else {
             continue;
         };
         if !db.indexes_language(adapter.language_id())? {

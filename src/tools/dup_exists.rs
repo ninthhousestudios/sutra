@@ -52,7 +52,7 @@ use crate::parser::adapter::{LanguageRegistry, ParserPool};
 use crate::parser::{self, ParseResult, RefContextKind, flatten_symbols};
 use crate::similarity::hrr::HrrVec;
 use crate::similarity::{MAX_HRR_SYMBOL_LINES, SimilarityMode};
-use crate::tools::advisory::{self, adapter_for, dirty_outside_diff, index_mismatch};
+use crate::tools::advisory::{self, dirty_outside_diff, index_mismatch};
 use crate::tools::firings::ReviewedPatch;
 use crate::tools::orphans::qualifier_fits;
 use crate::tools::review::DiffScope;
@@ -585,7 +585,7 @@ fn diff_units(
         let Some(path) = fh.new_path.as_deref().or(fh.old_path.as_deref()) else {
             continue;
         };
-        let Some(adapter) = adapter_for(registry, path) else {
+        let Some(adapter) = registry.adapter_for_path(path) else {
             continue;
         };
         if !db.indexes_language(adapter.language_id())? {
@@ -954,7 +954,8 @@ impl<'c> Corpus<'c> {
     ) -> Self {
         let is_test = |f: &CorpusFunction| {
             parser::flags_mark_test(f.flags, &f.hrr.language)
-                || adapter_for(registry, &f.hrr.file_path)
+                || registry
+                    .adapter_for_path(&f.hrr.file_path)
                     .is_some_and(|a| a.is_test_path(&f.hrr.file_path))
         };
         let mut pool = ParserPool::new(std::time::Duration::from_secs(5));
@@ -976,7 +977,7 @@ impl<'c> Corpus<'c> {
             let source = sources.entry(path).or_insert_with(|| {
                 match std::fs::read_to_string(workspace_root.join(path)) {
                     Ok(s) => {
-                        let adapter = adapter_for(registry, path)
+                        let adapter = registry.adapter_for_path(path)
                             .filter(|a| TREE_BODY_LANGUAGES.contains(&a.language_id()));
                         let spans = match adapter.map(|a| pool.tree(a, &s)) {
                             Some(Ok(tree)) => Some(body_spans(&tree)),

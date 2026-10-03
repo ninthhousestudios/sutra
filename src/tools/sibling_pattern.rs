@@ -998,10 +998,7 @@ fn adapter_for_path<'r>(
     registry: &'r LanguageRegistry,
     path: &str,
 ) -> Option<&'r dyn LanguageAdapter> {
-    let ext = Path::new(path).extension()?.to_str()?;
-    registry
-        .adapter_for_extension(ext)
-        .filter(|a| supported(*a))
+    registry.adapter_for_path(path).filter(|a| supported(*a))
 }
 
 /// A file's tokens outside its test-only items.
