@@ -747,17 +747,20 @@ pub(super) fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
             break;
         }
         let text = node_text(sib, src);
-        if let Some(inner) = text.strip_prefix("/**") {
-            let inner = inner.strip_suffix("*/").unwrap_or(inner).trim();
-            doc_lines.push(inner.to_string());
-        } else if let Some(inner) = text.strip_prefix("/*") {
+        // Doxygen markers (`/**`, `/*!`, `///`, `//!`) are tried before the
+        // plain `/*` / `//` forms so their extra character is not kept.
+        if let Some(inner) = ["/**", "/*!", "/*"]
+            .iter()
+            .find_map(|p| text.strip_prefix(p))
+        {
             let inner = inner.strip_suffix("*/").unwrap_or(inner).trim();
             doc_lines.push(inner.to_string());
         } else {
-            let content = text
-                .strip_prefix("// ")
-                .or_else(|| text.strip_prefix("//"))
+            let content = ["///", "//!", "//"]
+                .iter()
+                .find_map(|p| text.strip_prefix(p))
                 .unwrap_or(text);
+            let content = content.strip_prefix(' ').unwrap_or(content);
             doc_lines.push(content.to_string());
         }
         sibling = sib.prev_sibling();
@@ -1243,6 +1246,18 @@ mod tests {
         let doc = r.symbols[0].docstring.as_deref().unwrap();
         assert!(doc.contains("First line"));
         assert!(doc.contains("Second line"));
+    }
+
+    #[test]
+    fn docstring_doxygen_markers() {
+        for src in [
+            "/// Max.\nint max(int a, int b) { return a; }",
+            "//! Max.\nint max(int a, int b) { return a; }",
+            "/*! Max. */\nint max(int a, int b) { return a; }",
+        ] {
+            let r = parse_c(src);
+            assert_eq!(r.symbols[0].docstring.as_deref(), Some("Max."), "{src}");
+        }
     }
 
     #[test]

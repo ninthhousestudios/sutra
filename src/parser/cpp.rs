@@ -1083,6 +1083,18 @@ mod tests {
     }
 
     #[test]
+    fn docstring_doxygen_markers() {
+        for src in [
+            "/// Max.\nint max(int a, int b) { return a; }",
+            "//! Max.\nint max(int a, int b) { return a; }",
+            "/*! Max. */\nint max(int a, int b) { return a; }",
+        ] {
+            let r = parse_cpp(src);
+            assert_eq!(r.symbols[0].docstring.as_deref(), Some("Max."), "{src}");
+        }
+    }
+
+    #[test]
     fn call_expression_ref() {
         let r = parse_cpp("void f(void) { printf(\"hi\"); }");
         assert!(refs_of(&r, RefContextKind::Call).contains(&"printf"));
