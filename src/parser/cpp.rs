@@ -51,6 +51,7 @@ pub(super) fn has_test_suffix(lower_file_name: &str) -> bool {
 pub(super) fn collect_symbols(root: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymbol> {
     let mut symbols = Vec::new();
     collect_children(root, src, file_path, &mut symbols);
+    adopt_out_of_line(&mut symbols);
     symbols
 }
 
@@ -66,7 +67,14 @@ fn collect_children(node: Node, src: &[u8], file_path: &str, out: &mut Vec<Extra
 fn collect_node(node: Node, src: &[u8], file_path: &str, out: &mut Vec<ExtractedSymbol>) {
     match node.kind() {
         "namespace_definition" => collect_namespace(node, src, file_path, out),
-        "alias_declaration" => out.extend(extract_alias(node, src)),
+        "alias_declaration" => out.extend(extract_named_decl(node, src, SymbolKind::TypeAlias)),
+        // A concept names requirements a type satisfies, the role a trait
+        // bound plays; it is not a type, so TypeAlias would misdescribe it.
+        "concept_definition" => out.extend(extract_named_decl(node, src, SymbolKind::Trait)),
+        "function_definition" => collect_function(node, src, file_path, out),
+        "template_declaration" => collect_template(node, src, out, |inner, out| {
+            collect_node(inner, src, file_path, out)
+        }),
         // `extern "C" { ... }` and `extern "C" int f();` add no scope.
         "linkage_specification" => {
             if let Some(body) = node.child_by_field_name("body") {
@@ -79,10 +87,182 @@ fn collect_node(node: Node, src: &[u8], file_path: &str, out: &mut Vec<Extracted
         }
         // Include guards wrap whole headers; conditional blocks add no scope.
         kind if c::is_preproc_block(kind) => collect_children(node, src, file_path, out),
-        // Templates are unwrapped by the template pass (sutra/529).
-        "template_declaration" => {}
         _ => c::collect_symbol(node, src, file_path, Dialect::Cpp, out),
     }
+}
+
+/// A namespace-scope function definition. A plain `f()` stays on the shared
+/// C path; a qualified (`Foo::bar`), operator or specialized (`f<int>`) name
+/// needs C++ naming, and a qualified one is an out-of-line member definition.
+fn collect_function(node: Node, src: &[u8], file_path: &str, out: &mut Vec<ExtractedSymbol>) {
+    let declarator = node.child_by_field_name("declarator");
+    match declarator.zip(declarator.and_then(|d| callable_name(d, src))) {
+        Some((declarator, name)) if !name.is_plain() => {
+            out.push(extract_callable(
+                node, declarator, name, src, file_path, false,
+            ));
+        }
+        _ => c::collect_symbol(node, src, file_path, Dialect::Cpp, out),
+    }
+}
+
+/// `template<...> X` → the symbols `X` declares, spanning the template header
+/// and carrying its parameter list, the way Python's `decorated_definition`
+/// wraps a def. `collect_inner` is the scope's own collector, so a member
+/// template goes through the member rules and a namespace one through the
+/// namespace rules.
+fn collect_template<'t>(
+    node: Node<'t>,
+    src: &[u8],
+    out: &mut Vec<ExtractedSymbol>,
+    collect_inner: impl Fn(Node<'t>, &mut Vec<ExtractedSymbol>),
+) {
+    let Some(params) = node.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut cursor = node.walk();
+    let Some(inner) = node
+        .named_children(&mut cursor)
+        .filter(|n| {
+            !matches!(
+                n.kind(),
+                "template_parameter_list" | "requires_clause" | "comment"
+            )
+        })
+        .last()
+    else {
+        return;
+    };
+    let start = out.len();
+    collect_inner(inner, out);
+    let params = normalize_ws(node_text(params, src));
+    for sym in &mut out[start..] {
+        apply_template(sym, node, &params, src);
+    }
+}
+
+/// Mark `sym` as declared by template `node`. Nested headers
+/// (`template<class T> template<class U>`) apply innermost first, so each
+/// outer list is prepended.
+fn apply_template(sym: &mut ExtractedSymbol, node: Node, params: &str, src: &[u8]) {
+    sym.start_line = node.start_position().row + 1;
+    sym.start_col = node.start_position().column;
+    if sym.docstring.is_none() {
+        sym.docstring = c::extract_docstring(node, src);
+    }
+    let mut class_key = None;
+    update_attrs(sym, |attrs| {
+        let joined = match attrs.get("template_params").and_then(|v| v.as_str()) {
+            Some(inner) => format!("{params} {inner}"),
+            None => params.to_string(),
+        };
+        attrs.insert("template_params".into(), joined.into());
+        class_key = attrs
+            .get("class_key")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+    });
+    let signature = match (sym.signature.as_deref(), class_key) {
+        (Some(sig), _) => Some(format!("template{params} {sig}")),
+        (None, Some(key)) => Some(format!("template{params} {key} {}", sym.short_name)),
+        (None, None) => None,
+    };
+    if signature.is_some() {
+        set_signature(sym, signature);
+    }
+}
+
+/// Attach each out-of-line member definition to its class when that class is
+/// defined in the same file, so `parent_symbol_id` links it like an in-class
+/// member, and give it the access of its in-class declaration. A definition
+/// whose class lives in a header stays where it was written, `pub`.
+fn adopt_out_of_line(symbols: &mut Vec<ExtractedSymbol>) {
+    let mut paths = Vec::new();
+    find_adoptable(symbols, symbols, &[], &mut paths);
+    // Removing in reverse document order keeps every remaining path valid.
+    paths.sort_unstable_by(|a, b| b.cmp(a));
+    let mut defs: Vec<ExtractedSymbol> = paths.iter().map(|p| remove_at(symbols, p)).collect();
+    defs.reverse();
+    for mut def in defs {
+        let class = member_scope(&def)
+            .and_then(|scope| find_class_mut(symbols, scope))
+            .expect(
+                "invariant: find_adoptable only selects definitions whose class is in this file",
+            );
+        let declared_access = class
+            .children
+            .iter()
+            .find(|m| m.kind == SymbolKind::Method && m.short_name == def.short_name)
+            .and_then(member_access);
+        if let Some(access) = declared_access {
+            set_access(&mut def, access);
+        }
+        class.children.push(def);
+    }
+}
+
+/// Paths (child indices from the root) of namespace-level Methods — the
+/// out-of-line definitions — whose class is defined somewhere in `root`.
+/// Class bodies are not searched: a Method there is already a member.
+fn find_adoptable(
+    root: &[ExtractedSymbol],
+    level: &[ExtractedSymbol],
+    path: &[usize],
+    out: &mut Vec<Vec<usize>>,
+) {
+    for (i, sym) in level.iter().enumerate() {
+        let here: Vec<usize> = path.iter().copied().chain([i]).collect();
+        match sym.kind {
+            SymbolKind::Method => {
+                if member_scope(sym).is_some_and(|scope| find_class(root, scope).is_some()) {
+                    out.push(here);
+                }
+            }
+            SymbolKind::Struct => {}
+            _ => find_adoptable(root, &sym.children, &here, out),
+        }
+    }
+}
+
+fn remove_at(symbols: &mut Vec<ExtractedSymbol>, path: &[usize]) -> ExtractedSymbol {
+    let (&i, rest) = path
+        .split_first()
+        .expect("invariant: find_adoptable never records an empty path");
+    if rest.is_empty() {
+        symbols.remove(i)
+    } else {
+        remove_at(&mut symbols[i].children, rest)
+    }
+}
+
+/// `ns::Foo` for `ns::Foo::bar`.
+fn member_scope(sym: &ExtractedSymbol) -> Option<&str> {
+    sym.qualified_name
+        .strip_suffix(sym.short_name.as_str())?
+        .strip_suffix("::")
+}
+
+fn find_class<'s>(symbols: &'s [ExtractedSymbol], qualified: &str) -> Option<&'s ExtractedSymbol> {
+    symbols.iter().find_map(|s| {
+        if s.kind == SymbolKind::Struct && s.qualified_name == qualified {
+            Some(s)
+        } else {
+            find_class(&s.children, qualified)
+        }
+    })
+}
+
+fn find_class_mut<'s>(
+    symbols: &'s mut [ExtractedSymbol],
+    qualified: &str,
+) -> Option<&'s mut ExtractedSymbol> {
+    symbols.iter_mut().find_map(|s| {
+        if s.kind == SymbolKind::Struct && s.qualified_name == qualified {
+            Some(s)
+        } else {
+            find_class_mut(&mut s.children, qualified)
+        }
+    })
 }
 
 /// `namespace a { }` → Module `a`; `namespace a::b { }` → one Module `a::b`.
@@ -130,7 +310,16 @@ pub(super) fn extract_class(
     doc_anchor: Option<Node>,
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, src);
+    // `template<> class Foo<int>` specializes `Foo`: same name, args in attrs.
+    let (name, specialization) = match name_node.kind() {
+        "template_type" => (
+            node_text(name_node.child_by_field_name("name")?, src),
+            name_node
+                .child_by_field_name("arguments")
+                .map(|a| normalize_ws(node_text(a, src))),
+        ),
+        _ => (node_text(name_node, src), None),
+    };
     let class_key = match node.kind() {
         "class_specifier" => "class",
         "union_specifier" => "union",
@@ -150,6 +339,9 @@ pub(super) fn extract_class(
     }
     let mut attrs = serde_json::Map::new();
     attrs.insert("class_key".into(), class_key.into());
+    if let Some(args) = specialization {
+        attrs.insert("specialization_args".into(), args.into());
+    }
 
     let mut sym = base_symbol(node, src, Some(name_node), name, SymbolKind::Struct);
     sym.docstring = c::extract_docstring(doc_anchor.unwrap_or(node), src);
@@ -239,60 +431,68 @@ fn collect_members(
 ) {
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
-        let start = out.len();
         match child.kind() {
             "access_specifier" => {
                 if let Some(a) = Access::parse(node_text(child, src)) {
                     *access = a;
                 }
             }
-            "field_declaration" => {
-                if let Some(type_node) = child.child_by_field_name("type")
-                    && type_node.child_by_field_name("body").is_some()
-                    && let Some(sym) = c::extract_type_specifier(
-                        type_node,
-                        src,
-                        file_path,
-                        Dialect::Cpp,
-                        Some(child),
-                    )
-                {
-                    out.push(sym);
-                }
-                for declarator in c::field_children(child, "declarator") {
-                    if is_function_like(declarator) {
-                        out.extend(extract_method(child, declarator, src, file_path));
-                    } else {
-                        out.extend(extract_data_member(child, declarator, src));
-                    }
-                }
-            }
-            // Constructor and destructor declarations have no type, so they
-            // parse as `declaration` rather than `field_declaration`.
-            "declaration" => {
-                for declarator in c::field_children(child, "declarator") {
-                    if is_function_like(declarator) {
-                        out.extend(extract_method(child, declarator, src, file_path));
-                    }
-                }
-            }
-            "function_definition" => {
-                if let Some(declarator) = child.child_by_field_name("declarator") {
-                    out.extend(extract_method(child, declarator, src, file_path));
-                }
-            }
-            "alias_declaration" => out.extend(extract_alias(child, src)),
-            "type_definition" => c::collect_symbol(child, src, file_path, Dialect::Cpp, out),
             // Members inside set their own access; the block adds no scope.
             kind if c::is_preproc_block(kind) => {
                 collect_members(child, src, file_path, access, out);
-                continue;
             }
-            _ => {}
+            _ => {
+                let start = out.len();
+                collect_member(child, src, file_path, out);
+                for sym in &mut out[start..] {
+                    set_access(sym, *access);
+                }
+            }
         }
-        for sym in &mut out[start..] {
-            set_access(sym, *access);
+    }
+}
+
+/// The symbols one member-specification node declares, before access is
+/// applied.
+fn collect_member(child: Node, src: &[u8], file_path: &str, out: &mut Vec<ExtractedSymbol>) {
+    match child.kind() {
+        "field_declaration" => {
+            if let Some(type_node) = child.child_by_field_name("type")
+                && type_node.child_by_field_name("body").is_some()
+                && let Some(sym) =
+                    c::extract_type_specifier(type_node, src, file_path, Dialect::Cpp, Some(child))
+            {
+                out.push(sym);
+            }
+            for declarator in c::field_children(child, "declarator") {
+                if is_function_like(declarator) {
+                    out.extend(extract_member_fn(child, declarator, src, file_path));
+                } else {
+                    out.extend(extract_data_member(child, declarator, src));
+                }
+            }
         }
+        // Constructor and destructor declarations have no type, so they parse
+        // as `declaration` rather than `field_declaration`; so do member
+        // function templates.
+        "declaration" => {
+            for declarator in c::field_children(child, "declarator") {
+                if is_function_like(declarator) {
+                    out.extend(extract_member_fn(child, declarator, src, file_path));
+                }
+            }
+        }
+        "function_definition" => {
+            if let Some(declarator) = child.child_by_field_name("declarator") {
+                out.extend(extract_member_fn(child, declarator, src, file_path));
+            }
+        }
+        "alias_declaration" => out.extend(extract_named_decl(child, src, SymbolKind::TypeAlias)),
+        "type_definition" => c::collect_symbol(child, src, file_path, Dialect::Cpp, out),
+        "template_declaration" => collect_template(child, src, out, |inner, out| {
+            collect_member(inner, src, file_path, out)
+        }),
+        _ => {}
     }
 }
 
@@ -300,23 +500,127 @@ fn is_function_like(declarator: Node) -> bool {
     declarator.kind() == "operator_cast" || c::find_function_declarator(declarator).is_some()
 }
 
-/// A member function — declared, defined in-class, or `= default`/`= delete`.
-/// A bodiless declaration carries `declaration_only` and no complexity, so it
-/// does not show up as a complexity-0 twin of its definition (sutra/525).
-fn extract_method(
+fn extract_member_fn(
     node: Node,
     declarator: Node,
     src: &[u8],
     file_path: &str,
 ) -> Option<ExtractedSymbol> {
-    let (name, name_node) = method_name(declarator, src)?;
+    let name = callable_name(declarator, src)?;
+    Some(extract_callable(
+        node, declarator, name, src, file_path, true,
+    ))
+}
+
+/// A function's name as its declarator spells it.
+struct CallableName<'a> {
+    /// The qualifier written in the declarator — `ns::Foo` in
+    /// `void ns::Foo::bar()`, template arguments dropped. Empty unless the
+    /// definition is out of line.
+    scope: String,
+    /// Stable short name: `get`, `~Foo`, `operator==`, `operator bool`.
+    name: String,
+    /// The node the structural hash masks out.
+    name_node: Node<'a>,
+    /// Template arguments of an explicit specialization: `<int>` in `f<int>`.
+    specialization: Option<String>,
+}
+
+impl CallableName<'_> {
+    /// An unqualified identifier the C extractor names the same way.
+    fn is_plain(&self) -> bool {
+        self.scope.is_empty()
+            && self.specialization.is_none()
+            && matches!(self.name_node.kind(), "identifier" | "field_identifier")
+    }
+}
+
+fn callable_name<'a>(declarator: Node<'a>, src: &[u8]) -> Option<CallableName<'a>> {
+    let mut node = match declarator.kind() {
+        // `operator bool()` in a class; `Foo::operator bool()` out of line.
+        "operator_cast" | "qualified_identifier" => declarator,
+        _ => c::find_function_declarator(declarator)?.child_by_field_name("declarator")?,
+    };
+    let mut scope = Vec::new();
+    while node.kind() == "qualified_identifier" {
+        // A leading `::` has no scope.
+        if let Some(s) = node.child_by_field_name("scope") {
+            scope.push(scope_name(s, src));
+        }
+        node = node.child_by_field_name("name")?;
+    }
+    let mut specialization = None;
+    let name = match node.kind() {
+        "identifier" | "field_identifier" => node_text(node, src).to_string(),
+        "destructor_name" => node_text(node, src).split_whitespace().collect(),
+        "operator_name" => normalize_operator(node_text(node, src)),
+        "operator_cast" => {
+            let ty = node.child_by_field_name("type")?;
+            format!("operator {}", normalize_ws(node_text(ty, src)))
+        }
+        "template_function" | "template_method" => {
+            specialization = node
+                .child_by_field_name("arguments")
+                .map(|a| normalize_ws(node_text(a, src)));
+            node_text(node.child_by_field_name("name")?, src).to_string()
+        }
+        _ => return None,
+    };
+    Some(CallableName {
+        scope: scope.join("::"),
+        name,
+        name_node: node,
+        specialization,
+    })
+}
+
+/// A qualifier segment, without template arguments: `Foo<T>` → `Foo`, so a
+/// class template's out-of-line members qualify like its in-class ones.
+fn scope_name(scope: Node, src: &[u8]) -> String {
+    let named = match scope.kind() {
+        "template_type" => scope.child_by_field_name("name").unwrap_or(scope),
+        _ => scope,
+    };
+    normalize_ws(node_text(named, src))
+}
+
+/// The function-shaped declarator that carries parameters and trailing
+/// qualifiers (`const`, `&`, `noexcept`, `override`).
+fn function_declarator_of(declarator: Node) -> Option<Node> {
+    match declarator.kind() {
+        "operator_cast" => declarator.child_by_field_name("declarator"),
+        "qualified_identifier" => declarator
+            .child_by_field_name("name")
+            .and_then(function_declarator_of),
+        _ => c::find_function_declarator(declarator),
+    }
+}
+
+/// A function: a member declared or defined in-class (`member`), an
+/// out-of-line member definition (`Foo::bar`, a Method with `out_of_line`),
+/// or a namespace-scope function the C path can't name. A bodiless
+/// declaration carries `declaration_only` and no complexity, so it does not
+/// show up as a complexity-0 twin of its definition (sutra/525).
+fn extract_callable(
+    node: Node,
+    declarator: Node,
+    name: CallableName,
+    src: &[u8],
+    file_path: &str,
+    member: bool,
+) -> ExtractedSymbol {
     let body = node.child_by_field_name("body");
     let mut cursor = node.walk();
     let clause = node
         .named_children(&mut cursor)
         .find(|n| matches!(n.kind(), "default_method_clause" | "delete_method_clause"));
+    let mut cursor = node.walk();
+    let initializers = node
+        .children(&mut cursor)
+        .find(|n| n.kind() == "field_initializer_list");
 
     let mut attrs = c::fn_language_attrs(node, src, declarator);
+    insert_cpp_fn_attrs(&mut attrs, node, declarator, src);
     if body.is_none() && clause.is_none() {
         attrs.insert("declaration_only".into(), true.into());
     }
@@ -329,9 +633,6 @@ fn extract_method(
         }
         _ => {}
     }
-    if has_token(node, "virtual") {
-        attrs.insert("is_virtual".into(), true.into());
-    }
     if node.kind() == "field_declaration"
         && node
             .child_by_field_name("default_value")
@@ -339,19 +640,47 @@ fn extract_method(
     {
         attrs.insert("is_pure_virtual".into(), true.into());
     }
+    let out_of_line = !member && !name.scope.is_empty();
+    if out_of_line {
+        attrs.insert("out_of_line".into(), true.into());
+    }
+    if let Some(args) = name.specialization {
+        attrs.insert("specialization_args".into(), args.into());
+    }
 
-    let sig_end = body.or(clause).map_or(node.end_byte(), |n| n.start_byte());
+    // The signature stops before a constructor's member initializers.
+    let sig_end = initializers
+        .or(body)
+        .or(clause)
+        .map_or(node.end_byte(), |n| n.start_byte());
     let signature = node_text(node, src)
         .get(..sig_end - node.start_byte())
         .map(|s| s.trim().trim_end_matches(';').trim_end().to_string());
 
-    let mut sym = base_symbol(node, src, Some(name_node), &name, SymbolKind::Method);
-    sym.signature_hash = signature
-        .as_ref()
-        .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
-    sym.signature = signature;
+    let kind = if member || out_of_line {
+        SymbolKind::Method
+    } else {
+        SymbolKind::Function
+    };
+    let mut sym = base_symbol(node, src, Some(name.name_node), &name.name, kind);
+    if !name.scope.is_empty() {
+        sym.qualified_name = format!("{}::{}", name.scope, name.name);
+    }
+    set_signature(&mut sym, signature);
     sym.docstring = c::extract_docstring(node, src);
     sym.flags = c::extract_flags(file_path, &sym.short_name, node, Dialect::Cpp);
+    // Members get theirs from the access section; an out-of-line definition
+    // is `pub` until `adopt_out_of_line` finds its declaration.
+    if !member {
+        sym.visibility = Some(
+            if !out_of_line && c::has_specifier(node, src, "static") {
+                "private"
+            } else {
+                "pub"
+            }
+            .to_string(),
+        );
+    }
     match body {
         Some(body) => {
             sym.cyclomatic = Some(complexity::cyclomatic(
@@ -369,38 +698,53 @@ fn extract_method(
         None => {}
     }
     sym.language_attrs = attrs_json(attrs);
-    Some(sym)
+    sym
 }
 
-/// A member function's stable name and the node it is hashed around:
-/// `get`, `~Foo`, `operator==`, `operator bool`.
-fn method_name<'a>(declarator: Node<'a>, src: &[u8]) -> Option<(String, Node<'a>)> {
-    if declarator.kind() == "operator_cast" {
-        let ty = declarator.child_by_field_name("type")?;
-        let ty_text = node_text(ty, src)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        return Some((format!("operator {ty_text}"), declarator));
-    }
-    let func = c::find_function_declarator(declarator)?;
-    let name_node = func.child_by_field_name("declarator")?;
-    let name = match name_node.kind() {
-        "identifier" | "field_identifier" => node_text(name_node, src).to_string(),
-        "destructor_name" => node_text(name_node, src).split_whitespace().collect(),
-        "operator_name" => normalize_operator(node_text(name_node, src)),
-        _ => return None,
+/// The C++ function specifiers and qualifiers the C attributes don't cover.
+fn insert_cpp_fn_attrs(
+    attrs: &mut serde_json::Map<String, serde_json::Value>,
+    node: Node,
+    declarator: Node,
+    src: &[u8],
+) {
+    let mut set = |key: &str| {
+        attrs.insert(key.into(), true.into());
     };
-    Some((name, name_node))
+    if has_token(node, "virtual") {
+        set("is_virtual");
+    }
+    if c::has_specifier(node, src, "constexpr") {
+        set("is_constexpr");
+    }
+    if c::has_specifier(node, src, "consteval") {
+        set("is_consteval");
+    }
+    if has_token(node, "explicit_function_specifier") {
+        set("is_explicit");
+    }
+    let mut ref_qualifier = None;
+    if let Some(func) = function_declarator_of(declarator) {
+        let mut cursor = func.walk();
+        for child in func.children(&mut cursor) {
+            match (child.kind(), node_text(child, src).trim()) {
+                ("virtual_specifier", "override") => set("is_override"),
+                ("virtual_specifier", "final") => set("is_final"),
+                ("type_qualifier", "const") => set("is_const"),
+                ("noexcept", text) if normalize_ws(text) != "noexcept(false)" => set("is_noexcept"),
+                ("ref_qualifier", text) => ref_qualifier = Some(text),
+                _ => {}
+            }
+        }
+    }
+    if let Some(text) = ref_qualifier {
+        attrs.insert("ref_qualifier".into(), text.into());
+    }
 }
 
 /// `operator ==` → `operator==`; `operator new [ ]` → `operator new[]`.
 fn normalize_operator(text: &str) -> String {
-    let rest: String = text
-        .trim_start_matches("operator")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let rest = normalize_ws(text.trim_start_matches("operator"));
     let rest = rest
         .replace(" [", "[")
         .replace("[ ", "[")
@@ -432,10 +776,7 @@ fn extract_data_member(node: Node, declarator: Node, src: &[u8]) -> Option<Extra
         .map(|t| format!("{} {name}", node_text(t, src)));
 
     let mut sym = base_symbol(node, src, Some(name_node), name, kind);
-    sym.signature_hash = signature
-        .as_ref()
-        .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
-    sym.signature = signature;
+    set_signature(&mut sym, signature);
     sym.docstring = c::extract_docstring(node, src);
     if is_static {
         let mut attrs = serde_json::Map::new();
@@ -445,8 +786,9 @@ fn extract_data_member(node: Node, declarator: Node, src: &[u8]) -> Option<Extra
     Some(sym)
 }
 
-/// `using X = Y;` → TypeAlias.
-fn extract_alias(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
+/// `using X = Y;` → TypeAlias; `concept C = ...;` → Trait. The whole
+/// declaration is the signature.
+fn extract_named_decl(node: Node, src: &[u8], kind: SymbolKind) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, src);
     let signature = Some(
@@ -455,11 +797,8 @@ fn extract_alias(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
             .trim()
             .to_string(),
     );
-    let mut sym = base_symbol(node, src, Some(name_node), name, SymbolKind::TypeAlias);
-    sym.signature_hash = signature
-        .as_ref()
-        .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
-    sym.signature = signature;
+    let mut sym = base_symbol(node, src, Some(name_node), name, kind);
+    set_signature(&mut sym, signature);
     sym.docstring = c::extract_docstring(node, src);
     sym.visibility = Some("pub".to_string());
     Some(sym)
@@ -501,6 +840,14 @@ fn base_symbol(
     }
 }
 
+/// Set `sym`'s signature and the hash the shape diff compares.
+fn set_signature(sym: &mut ExtractedSymbol, signature: Option<String>) {
+    sym.signature_hash = signature
+        .as_ref()
+        .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
+    sym.signature = signature;
+}
+
 /// Qualify `sym` and its whole subtree by one enclosing scope.
 fn prefix_qualified(sym: &mut ExtractedSymbol, scope: &str) {
     sym.qualified_name = format!("{scope}::{}", sym.qualified_name);
@@ -522,14 +869,38 @@ fn make_private(sym: &mut ExtractedSymbol) {
 /// class's own members keep their own access.
 fn set_access(sym: &mut ExtractedSymbol, access: Access) {
     sym.visibility = Some(access.visibility().to_string());
-    let mut attrs: serde_json::Map<String, serde_json::Value> = match sym.language_attrs.as_deref()
-    {
+    update_attrs(sym, |attrs| {
+        attrs.insert("access".into(), access.as_str().into());
+    });
+}
+
+/// The access section a member was declared in, from `language_attrs.access`.
+fn member_access(sym: &ExtractedSymbol) -> Option<Access> {
+    let attrs = parse_attrs(sym);
+    Access::parse(attrs.get("access")?.as_str()?)
+}
+
+fn parse_attrs(sym: &ExtractedSymbol) -> serde_json::Map<String, serde_json::Value> {
+    match sym.language_attrs.as_deref() {
         Some(json) => serde_json::from_str(json)
             .expect("invariant: language_attrs is a JSON map this parser serialized"),
         None => serde_json::Map::new(),
-    };
-    attrs.insert("access".into(), access.as_str().into());
+    }
+}
+
+/// Edit `sym`'s already-serialized `language_attrs` in place.
+fn update_attrs(
+    sym: &mut ExtractedSymbol,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) {
+    let mut attrs = parse_attrs(sym);
+    edit(&mut attrs);
     sym.language_attrs = attrs_json(attrs);
+}
+
+/// Collapse whitespace runs to one space: `< typename  T >` → `< typename T >`.
+fn normalize_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Whether `node` has a direct child token of `kind` (`virtual` is an
@@ -1285,5 +1656,285 @@ int f(int x) {
         let r = parse_cpp("class A {\npublic:\n#ifdef X\n int a;\n#endif\n int b;\n};");
         assert_eq!(sym(&r, "A::a").visibility.as_deref(), Some("pub"));
         assert_eq!(sym(&r, "A::b").visibility.as_deref(), Some("pub"));
+    }
+
+    // --- templates, out-of-line definitions, overloads (sutra/529) ---
+
+    fn all<'a>(r: &'a ParseResult, qualified: &str) -> Vec<&'a crate::parser::ExtractedSymbol> {
+        flat(r)
+            .into_iter()
+            .filter(|s| s.qualified_name == qualified)
+            .collect()
+    }
+
+    #[test]
+    fn function_template_unwrapped_with_params() {
+        let r = parse_cpp(
+            "/** Max. */\ntemplate <typename T,  int N = 3>\nT max(T a, T b) { return a > b ? a : b; }",
+        );
+        let f = sym(&r, "max");
+        assert_eq!(f.kind, SymbolKind::Function);
+        assert_eq!(f.start_line, 2);
+        assert_eq!(f.docstring.as_deref(), Some("Max."));
+        assert_eq!(
+            f.signature.as_deref(),
+            Some("template<typename T, int N = 3> T max(T a, T b)")
+        );
+        assert_eq!(
+            sym_attrs(f).get("template_params"),
+            Some(&"<typename T, int N = 3>".into())
+        );
+        assert_eq!(f.cyclomatic, Some(2));
+    }
+
+    #[test]
+    fn class_template_and_member_template() {
+        let r = parse_cpp(
+            "template<class T> class Box {\npublic:\n template<class U> void put(U u);\n T get() const { return t; }\n T t;\n};",
+        );
+        let class = sym(&r, "Box");
+        assert_eq!(class.kind, SymbolKind::Struct);
+        assert_eq!(
+            class.signature.as_deref(),
+            Some("template<class T> class Box")
+        );
+        assert_eq!(
+            sym_attrs(class).get("template_params"),
+            Some(&"<class T>".into())
+        );
+        let put = sym(&r, "Box::put");
+        assert_eq!(put.kind, SymbolKind::Method);
+        assert_eq!(put.visibility.as_deref(), Some("pub"));
+        let attrs = sym_attrs(put);
+        assert_eq!(attrs.get("template_params"), Some(&"<class U>".into()));
+        assert_eq!(attrs.get("declaration_only"), Some(&true.into()));
+        assert_eq!(
+            put.signature.as_deref(),
+            Some("template<class U> void put(U u)")
+        );
+        // Only the template itself carries the header, not its members.
+        assert_eq!(sym_attrs(sym(&r, "Box::get")).get("template_params"), None);
+    }
+
+    #[test]
+    fn specializations_keep_the_primary_name() {
+        let r = parse_cpp(
+            "template<class T> struct Traits { };\ntemplate<> struct Traits<int> { int x; };\n\
+             template<class T> struct Traits<T*> { };\ntemplate<> void f<int>(int) {}",
+        );
+        let traits = all(&r, "Traits");
+        assert_eq!(traits.len(), 3);
+        assert_eq!(sym_attrs(traits[0]).get("specialization_args"), None);
+        let full = sym_attrs(traits[1]);
+        assert_eq!(full.get("specialization_args"), Some(&"<int>".into()));
+        assert_eq!(full.get("template_params"), Some(&"<>".into()));
+        assert_eq!(
+            sym_attrs(traits[2]).get("specialization_args"),
+            Some(&"<T*>".into())
+        );
+        assert_eq!(sym(&r, "Traits::x").kind, SymbolKind::Field);
+        let f = sym(&r, "f");
+        assert_eq!(f.kind, SymbolKind::Function);
+        assert_eq!(
+            sym_attrs(f).get("specialization_args"),
+            Some(&"<int>".into())
+        );
+    }
+
+    #[test]
+    fn alias_variable_and_concept_templates() {
+        let r = parse_cpp(
+            "template<class T> using Vec = std::vector<T>;\n\
+             template<class T> constexpr T pi = T(3.14);\n\
+             template<class T> concept Sized = requires(T t) { t.size(); };",
+        );
+        let alias = sym(&r, "Vec");
+        assert_eq!(alias.kind, SymbolKind::TypeAlias);
+        assert_eq!(
+            alias.signature.as_deref(),
+            Some("template<class T> using Vec = std::vector<T>")
+        );
+        assert_eq!(sym(&r, "pi").kind, SymbolKind::Const);
+        let concept = sym(&r, "Sized");
+        assert_eq!(concept.kind, SymbolKind::Trait);
+        assert_eq!(
+            sym_attrs(concept).get("template_params"),
+            Some(&"<class T>".into())
+        );
+    }
+
+    #[test]
+    fn out_of_line_definitions_qualify_and_attach_to_their_class() {
+        let r = parse_cpp(
+            "namespace ns {\nclass Foo {\n Foo();\n ~Foo();\n int get() const;\n \
+             bool operator==(const Foo&) const;\n operator bool() const;\npublic:\n void run();\n};\n\
+             Foo::Foo() : n(0) {}\nFoo::~Foo() {}\nint Foo::get() const { if (n) return n; return 0; }\n\
+             bool Foo::operator==(const Foo& o) const { return true; }\nFoo::operator bool() const { return true; }\n}\n\
+             void ns::Foo::run() {}",
+        );
+        let class = sym(&r, "ns::Foo");
+        for name in [
+            "ns::Foo::Foo",
+            "ns::Foo::~Foo",
+            "ns::Foo::get",
+            "ns::Foo::operator==",
+            "ns::Foo::operator bool",
+            "ns::Foo::run",
+        ] {
+            let defs: Vec<_> = class
+                .children
+                .iter()
+                .filter(|m| m.qualified_name == name)
+                .collect();
+            assert_eq!(defs.len(), 2, "{name}: declaration and definition");
+            let def = defs[1];
+            assert_eq!(def.kind, SymbolKind::Method, "{name}");
+            let attrs = sym_attrs(def);
+            assert_eq!(attrs.get("out_of_line"), Some(&true.into()), "{name}");
+            assert_eq!(attrs.get("declaration_only"), None, "{name}");
+        }
+        // Access mirrors the in-class declaration.
+        let get = &class
+            .children
+            .iter()
+            .filter(|m| m.short_name == "get")
+            .collect::<Vec<_>>()[1];
+        assert_eq!(get.visibility.as_deref(), Some("private"));
+        assert_eq!(get.cyclomatic, Some(2));
+        assert_eq!(get.signature.as_deref(), Some("int Foo::get() const"));
+        let run = class.children.iter().rfind(|m| m.short_name == "run");
+        assert_eq!(run.and_then(|m| m.visibility.as_deref()), Some("pub"));
+        // Member initializers are not part of the signature.
+        let ctor = class.children.iter().rfind(|m| m.short_name == "Foo");
+        assert_eq!(
+            ctor.and_then(|m| m.signature.as_deref()),
+            Some("Foo::Foo()")
+        );
+        // Nothing stays behind at namespace level.
+        let module = sym(&r, "ns");
+        assert!(module.children.iter().all(|s| s.kind != SymbolKind::Method));
+        assert!(r.symbols.iter().all(|s| s.kind != SymbolKind::Method));
+    }
+
+    #[test]
+    fn out_of_line_definition_of_a_header_class_stays_put() {
+        let r = parse_cpp("namespace db {\nint Table::size() const { return n; }\n}");
+        let def = sym(&r, "db::Table::size");
+        assert_eq!(def.kind, SymbolKind::Method);
+        assert_eq!(def.short_name, "size");
+        assert_eq!(def.visibility.as_deref(), Some("pub"));
+        let attrs = sym_attrs(def);
+        assert_eq!(attrs.get("out_of_line"), Some(&true.into()));
+        assert_eq!(attrs.get("is_const"), Some(&true.into()));
+        assert!(
+            sym(&r, "db")
+                .children
+                .iter()
+                .any(|s| s.short_name == "size")
+        );
+    }
+
+    #[test]
+    fn class_template_member_defined_out_of_line() {
+        let r = parse_cpp(
+            "template<class T> struct Box { template<class U> void put(U u); };\n\
+             template<class T> template<class U> void Box<T>::put(U u) {}",
+        );
+        let puts: Vec<_> = sym(&r, "Box")
+            .children
+            .iter()
+            .filter(|m| m.qualified_name == "Box::put")
+            .collect();
+        assert_eq!(puts.len(), 2);
+        let attrs = sym_attrs(puts[1]);
+        assert_eq!(attrs.get("out_of_line"), Some(&true.into()));
+        assert_eq!(
+            attrs.get("template_params"),
+            Some(&"<class T> <class U>".into())
+        );
+        assert_eq!(puts[1].start_line, 2);
+        assert_eq!(
+            puts[1].signature.as_deref(),
+            Some("template<class T> template<class U> void Box<T>::put(U u)")
+        );
+    }
+
+    #[test]
+    fn overloads_share_a_name_with_distinct_signatures() {
+        let r = parse_cpp(
+            "void log(int x) {}\nvoid log(const char* s) {}\n\
+             struct S { int at(int i); int at(int i) const; int at(int i) &&; void f() noexcept; void f(); };\n\
+             std::ostream& operator<<(std::ostream& o, const S& s) { return o; }\n\
+             std::ostream& operator<<(std::ostream& o, int s) { return o; }",
+        );
+        for (name, n) in [("log", 2), ("S::at", 3), ("S::f", 2), ("operator<<", 2)] {
+            let overloads = all(&r, name);
+            assert_eq!(overloads.len(), n, "{name}");
+            let mut sigs: Vec<_> = overloads.iter().map(|s| s.signature.as_deref()).collect();
+            sigs.sort();
+            sigs.dedup();
+            assert_eq!(sigs.len(), n, "{name} signatures must differ: {sigs:?}");
+        }
+        let op = all(&r, "operator<<")[0];
+        assert_eq!(op.kind, SymbolKind::Function);
+        assert_eq!(op.visibility.as_deref(), Some("pub"));
+        let ats = all(&r, "S::at");
+        assert_eq!(sym_attrs(ats[1]).get("is_const"), Some(&true.into()));
+        assert_eq!(sym_attrs(ats[2]).get("ref_qualifier"), Some(&"&&".into()));
+    }
+
+    #[test]
+    fn method_specifier_attrs() {
+        let r = parse_cpp(
+            "class D : public B {\npublic:\n explicit D(int);\n void run() override;\n \
+             virtual void stop() final;\n static inline int count();\n \
+             constexpr int c() const noexcept { return 1; }\n consteval int e() { return 2; }\n \
+             void g() noexcept(false);\n D& operator=(const D&) & = default;\n D(D&&) = delete;\n \
+             virtual void p() const = 0;\n};",
+        );
+        let a = |name: &str| sym_attrs(sym(&r, name));
+        assert_eq!(a("D::D").get("is_explicit"), Some(&true.into()));
+        assert_eq!(a("D::run").get("is_override"), Some(&true.into()));
+        assert_eq!(a("D::run").get("is_virtual"), None);
+        let stop = a("D::stop");
+        assert_eq!(stop.get("is_virtual"), Some(&true.into()));
+        assert_eq!(stop.get("is_final"), Some(&true.into()));
+        let count = a("D::count");
+        assert_eq!(count.get("is_static"), Some(&true.into()));
+        assert_eq!(count.get("is_inline"), Some(&true.into()));
+        let c = a("D::c");
+        assert_eq!(c.get("is_constexpr"), Some(&true.into()));
+        assert_eq!(c.get("is_const"), Some(&true.into()));
+        assert_eq!(c.get("is_noexcept"), Some(&true.into()));
+        assert_eq!(a("D::e").get("is_consteval"), Some(&true.into()));
+        assert_eq!(a("D::g").get("is_noexcept"), None);
+        let assign = a("D::operator=");
+        assert_eq!(assign.get("is_defaulted"), Some(&true.into()));
+        assert_eq!(assign.get("ref_qualifier"), Some(&"&".into()));
+        let deleted: Vec<_> = all(&r, "D::D").into_iter().map(sym_attrs).collect();
+        assert_eq!(deleted[1].get("is_deleted"), Some(&true.into()));
+        let p = a("D::p");
+        assert_eq!(p.get("is_pure_virtual"), Some(&true.into()));
+        assert_eq!(p.get("is_const"), Some(&true.into()));
+    }
+
+    #[test]
+    fn trailing_return_type_in_signature() {
+        let r = parse_cpp("auto f() -> int { return 1; }\nstruct S { auto g() const -> int; };");
+        assert_eq!(sym(&r, "f").signature.as_deref(), Some("auto f() -> int"));
+        assert_eq!(
+            sym(&r, "S::g").signature.as_deref(),
+            Some("auto g() const -> int")
+        );
+    }
+
+    #[test]
+    fn lambdas_are_not_symbols() {
+        let r = parse_cpp(
+            "auto add = [](int a, int b) { struct L { int x; }; return a + b; };\n\
+             void run() { auto f = [&]() { return 1; }; f(); }",
+        );
+        let names: Vec<_> = flat(&r).iter().map(|s| s.qualified_name.as_str()).collect();
+        assert_eq!(names, ["add", "run"]);
     }
 }

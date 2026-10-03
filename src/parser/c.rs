@@ -593,7 +593,8 @@ fn collect_var_declarators(
     dialect: Dialect,
     symbols: &mut Vec<ExtractedSymbol>,
 ) {
-    let has_const = has_specifier(node, src, "const");
+    // `constexpr` (C++, C23) implies `const`.
+    let has_const = has_specifier(node, src, "const") || has_specifier(node, src, "constexpr");
     let kind = if has_const {
         SymbolKind::Const
     } else {

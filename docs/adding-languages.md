@@ -366,6 +366,12 @@ and so changes their symbol ids. Freshness must treat a stored
   complexity 0.
 - **Out-of-line definitions** (`void Foo::bar() {}`) → `Method` with the same
   qualified name `Foo::bar`, and `language_attrs.out_of_line: true`.
+  Template arguments in the qualifier are dropped (`Foo<T>::bar` →
+  `Foo::bar`). When the class is defined in the same file, the definition
+  becomes a child of the class and takes the access of its in-class
+  declaration; otherwise it stays where it was written, `pub`. The adapter
+  can't tell `void ns::f() {}` (a namespace-qualified free function) from a
+  member, so that also comes out as an out-of-line `Method`.
 - **Free-function prototypes** are skipped, following the C adapter
   (`c.rs` `tests::extern_declaration_skipped`).
 - When a declaration and a definition share a name, the resolver prefers the
@@ -381,6 +387,22 @@ The resolver does no overload resolution: a call to `foo` links to **every**
 overload of `foo`. That over-reports callers but never misses one. Linking
 none would make `sutra_refs` and `sutra_impact` silently wrong for
 overloaded APIs.
+
+### Templates
+
+`template<...> X` is unwrapped to the symbols `X` declares, the way Python's
+`decorated_definition` is. The symbol's span starts at `template`, the
+parameter list goes into `language_attrs.template_params`, and the signature
+is prefixed with `template<...>`. Nested headers
+(`template<class T> template<class U>`) join with a space. A class template
+gets the signature `template<...> class Foo`.
+
+Specializations keep the primary's name: `template<> class Foo<int>` and
+`template<> void f<int>(int)` are `Foo` and `f`, with
+`language_attrs.specialization_args: "<int>"`.
+
+A `concept` is a `Trait`: it names requirements on a type, the role a trait
+bound plays. It isn't a type, so `TypeAlias` would misdescribe it.
 
 ### Test macros
 
