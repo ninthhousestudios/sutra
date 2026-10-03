@@ -294,6 +294,137 @@ advisory.
   `setup.cfg` to find package boundaries. Could also accept a
   config hint in `.sutra/rules.toml`.
 
+## C++
+
+Design decisions settled in sutra/525; grammar measurements behind them are in
+sutra/538 (leveldb, Hyprland, udis86, kala-reverse).
+
+### Language id
+
+`cpp`. `sutra workspaces add` also accepts `c++` and `cxx` as aliases.
+`lessons.rs` already canonicalizes `cpp`/`c++` on both stored tags and
+workspace languages, so lesson filtering is spelling-independent.
+
+### Extensions
+
+cpp owns `cc`, `cpp`, `cxx`, `c++`, `hpp`, `hh`, `hxx`, `h++`, `ipp`, `tpp`,
+`inl`. C++20 module units (`cppm`, `ixx`) are not indexed. `.h` and `.c` are
+shared with the C adapter; see the next section.
+
+### Routing shared extensions (`.h`, `.c`)
+
+An extension maps to an **ordered candidate list** of adapters:
+`.h → [cpp, c]`, `.c → [c, cpp]`. The adapter is the first candidate the
+workspace declares in `languages`:
+
+| Workspace languages | `.h` | `.c` |
+|---|---|---|
+| `c` | c | c |
+| `cpp` | cpp | cpp |
+| `c`, `cpp` | cpp | c |
+
+- Mixed workspaces send `.h` to cpp. On leveldb, the C++ grammar was never
+  worse than C on any header, including pure-C API headers under
+  `extern "C"`. The C grammar broke 39/40 class headers.
+- A cpp-only workspace sends `.c` to cpp. Before this, such a workspace didn't
+  index `.c` at all. This is also how a decompiled C++ corpus like
+  kala-reverse opts into the C++ grammar: declare `languages = ["cpp"]`.
+- **No fallback to C on parse errors.** On the sutra/538 corpora it would have
+  rescued zero headers, while doubling parse cost on the 16–78% of files that
+  macros push into error. It would also flip a file's grammar when an edit
+  tips the error comparison, churning symbol ids.
+- **No content sniffing.** A header would flip language when someone adds
+  `class`.
+- **No per-workspace extension → language override.** sutra/538 measured
+  +0.35% function names on kala and 38 resolvable qualified callees. That
+  isn't worth a permanent config surface, and the candidate-list rule above
+  already covers the opt-in.
+
+**Where resolution happens.** `LanguageRegistry::for_languages(&[String])`
+builds a workspace-scoped registry. It resolves each shared extension once, at
+construction, so `adapter_for_extension` keeps its signature.
+`default_registry()` has no workspace context and keeps `.h → c`, so
+behavior without a workspace is unchanged.
+
+- The pipeline, freshness and the MCP tools build the scoped registry from
+  `workspace.languages`.
+- The guard builds it from `SELECT DISTINCT language FROM files`. This covers
+  proposed files that aren't indexed yet.
+- `any_language_is_test_path` unions every adapter's rules and never picks a
+  grammar, so it is unaffected.
+
+Changing a workspace's `languages` changes which grammar its `.h` files get,
+and so changes their symbol ids. Freshness must treat a stored
+`files.language` that differs from the resolved language as stale.
+
+### Declarations vs definitions
+
+- **In-class member declarations** → `Method`. These are the API surface and
+  the only home of pure virtuals. A bodiless declaration carries
+  `language_attrs.declaration_only: true`. Complexity, similarity and the
+  shape diff skip it; otherwise every method would appear twice, once at
+  complexity 0.
+- **Out-of-line definitions** (`void Foo::bar() {}`) → `Method` with the same
+  qualified name `Foo::bar`, and `language_attrs.out_of_line: true`.
+- **Free-function prototypes** are skipped, following the C adapter
+  (`c.rs` `tests::extern_declaration_skipped`).
+- When a declaration and a definition share a name, the resolver prefers the
+  bodied definition as a `Call` target.
+
+### Overloads
+
+Overloads share a `qualified_name` and differ by signature. The symbols table
+has no uniqueness constraint that blocks this, and `sutra_symbol` returns
+every overload.
+
+The resolver does no overload resolution: a call to `foo` links to **every**
+overload of `foo`. That over-reports callers but never misses one. Linking
+none would make `sutra_refs` and `sutra_impact` silently wrong for
+overloaded APIs.
+
+### Test macros
+
+Some test macros parse as a `function_definition`: `TEST`, `TEST_F`,
+`TEST_P`, `TYPED_TEST`, `TEST_CASE` and `SCENARIO`. When the declarator name
+is one of them, the macro name isn't used as the symbol name. Instead:
+
+- The symbol is named from the macro's arguments, joined with `.`.
+  String-literal quotes are stripped. So `TEST(Suite, Name)` becomes
+  `Suite.Name` and `TEST_CASE("does x")` becomes `does x`.
+- `FLAG_TEST` is set.
+- The return type may be missing. Hyprland's `TEST_CASE(name) {` parses with a
+  MISSING type node.
+- The separator is `.`, not `::`, so the suite doesn't read as a class
+  qualifier to name resolution.
+
+Without this, `TEST` becomes a name collision hundreds of entries wide.
+
+### Module boundary strength
+
+Weak. Namespaces are open and nothing enforces them. Revisit if C++20 modules
+are ever indexed.
+
+### Layering
+
+`cpp.rs` reuses `c.rs` helpers for the C subset, with their visibility widened
+to `pub(super)`, the same way `typescript.rs` reuses `javascript.rs`. C
+extraction is not copy-pasted.
+
+### Risks
+
+- **Macro noise dominates parse errors on real C++.** Common sources:
+  - export macros between `class` and the name (`class LEVELDB_EXPORT DB`);
+  - thread-safety annotations after declarators (`GUARDED_BY(mu_)`);
+  - `if UNLIKELY(x)`;
+  - `decltype(member)` in argument lists.
+
+  Budget for it in the adapter's error tolerance.
+- **tree-sitter-cpp defects:**
+  - comma expressions inside parenthesized conditions;
+  - `T *this;` local declarations, which Ghidra emits.
+
+  Both matter only for decompiled `.c` routed to cpp.
+
 ## Shared work
 
 Both languages benefit from infrastructure that's not language-specific:
