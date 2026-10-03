@@ -78,7 +78,7 @@ fn collect_node(node: Node, src: &[u8], file_path: &str, out: &mut Vec<Extracted
             }
         }
         // Include guards wrap whole headers; conditional blocks add no scope.
-        kind if is_preproc_block(kind) => collect_children(node, src, file_path, out),
+        kind if c::is_preproc_block(kind) => collect_children(node, src, file_path, out),
         // Templates are unwrapped by the template pass (sutra/529).
         "template_declaration" => {}
         _ => c::collect_symbol(node, src, file_path, Dialect::Cpp, out),
@@ -284,7 +284,7 @@ fn collect_members(
             "alias_declaration" => out.extend(extract_alias(child, src)),
             "type_definition" => c::collect_symbol(child, src, file_path, Dialect::Cpp, out),
             // Members inside set their own access; the block adds no scope.
-            kind if is_preproc_block(kind) => {
+            kind if c::is_preproc_block(kind) => {
                 collect_members(child, src, file_path, access, out);
                 continue;
             }
@@ -294,13 +294,6 @@ fn collect_members(
             set_access(sym, *access);
         }
     }
-}
-
-fn is_preproc_block(kind: &str) -> bool {
-    matches!(
-        kind,
-        "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" | "preproc_elifdef"
-    )
 }
 
 fn is_function_like(declarator: Node) -> bool {

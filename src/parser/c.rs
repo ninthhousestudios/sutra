@@ -146,11 +146,35 @@ fn collect_symbols(
         return super::cpp::collect_symbols(node, src, file_path);
     }
     let mut symbols = Vec::new();
+    collect_children(node, src, file_path, dialect, &mut symbols);
+    symbols
+}
+
+fn collect_children(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    dialect: Dialect,
+    symbols: &mut Vec<ExtractedSymbol>,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_symbol(child, src, file_path, dialect, &mut symbols);
+        // Include guards wrap whole headers; conditional blocks add no scope.
+        if is_preproc_block(child.kind()) {
+            collect_children(child, src, file_path, dialect, symbols);
+        } else {
+            collect_symbol(child, src, file_path, dialect, symbols);
+        }
     }
-    symbols
+}
+
+/// `#if`/`#ifdef`/`#else`/`#elif` blocks, whose children are top-level
+/// declarations of the enclosing scope.
+pub(super) fn is_preproc_block(kind: &str) -> bool {
+    matches!(
+        kind,
+        "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" | "preproc_elifdef"
+    )
 }
 
 /// Extract the symbols one top-level C-subset node defines. The C++ walker
@@ -1168,6 +1192,22 @@ mod tests {
         );
         assert_eq!(r.symbols.len(), 1);
         assert_eq!(r.symbols[0].short_name, "REAL_CONST");
+    }
+
+    #[test]
+    fn symbols_inside_include_guard_and_conditionals() {
+        let r = parse_c(
+            "#ifndef G_H\n#define G_H\nint f(void) { return 0; }\n#ifdef FAST\nint g(void) { return 1; }\n#elif defined(SLOW)\nint h(void) { return 2; }\n#else\nint k(void) { return 3; }\n#endif\n#if 0\nstruct s { int x; };\n#endif\n#endif",
+        );
+        let mut names: Vec<&str> = r.symbols.iter().map(|s| s.short_name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["f", "g", "h", "k", "s"]);
+        assert!(
+            r.symbols
+                .iter()
+                .find(|s| s.short_name == "f")
+                .is_some_and(|s| s.kind == SymbolKind::Function)
+        );
     }
 
     #[test]
