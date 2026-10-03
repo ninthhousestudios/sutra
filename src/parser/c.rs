@@ -71,7 +71,7 @@ impl Dialect {
 pub const FLAG_TEST: u32 = 0x01;
 pub const FLAG_FFI_ENTRY: u32 = 0x04;
 
-fn extract_flags(file_path: &str, name: &str, node: Node, dialect: Dialect) -> u32 {
+pub(super) fn extract_flags(file_path: &str, name: &str, node: Node, dialect: Dialect) -> u32 {
     let mut flags = 0u32;
 
     if is_test_file(file_path, dialect) {
@@ -142,83 +142,104 @@ fn collect_symbols(
     file_path: &str,
     dialect: Dialect,
 ) -> Vec<ExtractedSymbol> {
+    if dialect == Dialect::Cpp {
+        return super::cpp::collect_symbols(node, src, file_path);
+    }
     let mut symbols = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        match child.kind() {
-            "function_definition" => {
-                if let Some(sym) = extract_function(child, src, file_path, dialect) {
-                    symbols.push(sym);
-                }
-            }
-            "struct_specifier" if child.child_by_field_name("body").is_some() => {
-                if let Some(sym) = extract_struct(child, src, None) {
-                    symbols.push(sym);
-                }
-            }
-            "enum_specifier" if child.child_by_field_name("body").is_some() => {
-                if let Some(sym) = extract_enum(child, src, None) {
-                    symbols.push(sym);
-                }
-            }
-            "type_definition" => {
-                if let Some(type_node) = child.child_by_field_name("type") {
-                    let has_name = type_node.child_by_field_name("name").is_some();
-                    let has_body = type_node.child_by_field_name("body").is_some();
-                    if has_name && has_body {
-                        match type_node.kind() {
-                            "struct_specifier" => {
-                                if let Some(sym) = extract_struct(type_node, src, Some(child)) {
-                                    symbols.push(sym);
-                                }
-                            }
-                            "enum_specifier" => {
-                                if let Some(sym) = extract_enum(type_node, src, Some(child)) {
-                                    symbols.push(sym);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                collect_typedef_declarators(child, src, &mut symbols);
-            }
-            "declaration" => {
-                if let Some(type_node) = child.child_by_field_name("type")
-                    && type_node.child_by_field_name("body").is_some()
-                {
-                    match type_node.kind() {
-                        "struct_specifier" => {
-                            if let Some(sym) = extract_struct(type_node, src, Some(child)) {
-                                symbols.push(sym);
-                            }
-                        }
-                        "enum_specifier" => {
-                            if let Some(sym) = extract_enum(type_node, src, Some(child)) {
-                                symbols.push(sym);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if !has_specifier(child, src, "extern") {
-                    collect_var_declarators(child, src, file_path, dialect, &mut symbols);
-                }
-            }
-            "preproc_function_def" => {
-                if let Some(sym) = extract_macro(child, src, file_path, dialect) {
-                    symbols.push(sym);
-                }
-            }
-            "preproc_def" => {
-                if let Some(sym) = extract_const_define(child, src, file_path, dialect) {
-                    symbols.push(sym);
-                }
-            }
-            _ => {}
-        }
+        collect_symbol(child, src, file_path, dialect, &mut symbols);
     }
     symbols
+}
+
+/// Extract the symbols one top-level C-subset node defines. The C++ walker
+/// calls this for every node it has no C++-specific handling for, so shared
+/// syntax goes through one code path in both dialects.
+pub(super) fn collect_symbol(
+    child: Node,
+    src: &[u8],
+    file_path: &str,
+    dialect: Dialect,
+    symbols: &mut Vec<ExtractedSymbol>,
+) {
+    match child.kind() {
+        "function_definition" => {
+            if let Some(sym) = extract_function(child, src, file_path, dialect) {
+                symbols.push(sym);
+            }
+        }
+        "struct_specifier" | "class_specifier" | "union_specifier" | "enum_specifier"
+            if child.child_by_field_name("body").is_some() =>
+        {
+            if let Some(sym) = extract_type_specifier(child, src, file_path, dialect, None) {
+                symbols.push(sym);
+            }
+        }
+        "type_definition" => {
+            if let Some(type_node) = child.child_by_field_name("type") {
+                let has_name = type_node.child_by_field_name("name").is_some();
+                let has_body = type_node.child_by_field_name("body").is_some();
+                if has_name
+                    && has_body
+                    && let Some(sym) =
+                        extract_type_specifier(type_node, src, file_path, dialect, Some(child))
+                {
+                    symbols.push(sym);
+                }
+            }
+            collect_typedef_declarators(child, src, symbols);
+        }
+        "declaration" => {
+            if let Some(type_node) = child.child_by_field_name("type")
+                && type_node.child_by_field_name("body").is_some()
+                && let Some(sym) =
+                    extract_type_specifier(type_node, src, file_path, dialect, Some(child))
+            {
+                symbols.push(sym);
+            }
+            if !has_specifier(child, src, "extern") {
+                collect_var_declarators(child, src, file_path, dialect, symbols);
+            }
+        }
+        "preproc_function_def" => {
+            if let Some(sym) = extract_macro(child, src, file_path, dialect) {
+                symbols.push(sym);
+            }
+        }
+        "preproc_def" => {
+            if let Some(sym) = extract_const_define(child, src, file_path, dialect) {
+                symbols.push(sym);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A bodied struct/class/union/enum specifier. C keeps its field-only struct
+/// and bare enum (and, as before, ignores unions); C++ routes records through
+/// the class extractor so members, methods and access sections come along.
+pub(super) fn extract_type_specifier(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    dialect: Dialect,
+    doc_anchor: Option<Node>,
+) -> Option<ExtractedSymbol> {
+    match (dialect, node.kind()) {
+        (_, "enum_specifier") => {
+            let sym = extract_enum(node, src, doc_anchor)?;
+            Some(match dialect {
+                Dialect::C => sym,
+                Dialect::Cpp => super::cpp::with_enumerators(sym, node, src),
+            })
+        }
+        (Dialect::C, "struct_specifier") => extract_struct(node, src, doc_anchor),
+        (Dialect::Cpp, "struct_specifier" | "class_specifier" | "union_specifier") => {
+            super::cpp::extract_class(node, src, file_path, doc_anchor)
+        }
+        _ => None,
+    }
 }
 
 fn extract_function(
@@ -412,7 +433,11 @@ fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Extr
     })
 }
 
-fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>) {
+pub(super) fn collect_typedef_declarators(
+    node: Node,
+    src: &[u8],
+    symbols: &mut Vec<ExtractedSymbol>,
+) {
     let docstring = extract_docstring(node, src);
     let signature = Some(
         node_text(node, src)
@@ -593,7 +618,7 @@ fn collect_var_declarators(
 // Declarator navigation
 // ---------------------------------------------------------------------------
 
-fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
+pub(super) fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
     let mut result = Vec::new();
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
@@ -609,7 +634,7 @@ fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
     result
 }
 
-fn find_name_in_declarator(node: Node, src: &[u8]) -> Option<String> {
+pub(super) fn find_name_in_declarator(node: Node, src: &[u8]) -> Option<String> {
     match node.kind() {
         "identifier" | "type_identifier" | "field_identifier" | "primitive_type" => {
             Some(node_text(node, src).to_string())
@@ -621,11 +646,14 @@ fn find_name_in_declarator(node: Node, src: &[u8]) -> Option<String> {
         | "function_declarator" => node
             .child_by_field_name("declarator")
             .and_then(|d| find_name_in_declarator(d, src)),
+        "reference_declarator" => {
+            reference_inner(node).and_then(|d| find_name_in_declarator(d, src))
+        }
         _ => None,
     }
 }
 
-fn find_name_node_in_declarator(node: Node) -> Option<Node> {
+pub(super) fn find_name_node_in_declarator(node: Node) -> Option<Node> {
     match node.kind() {
         "identifier" | "type_identifier" | "field_identifier" | "primitive_type" => Some(node),
         "pointer_declarator"
@@ -635,18 +663,27 @@ fn find_name_node_in_declarator(node: Node) -> Option<Node> {
         | "function_declarator" => node
             .child_by_field_name("declarator")
             .and_then(find_name_node_in_declarator),
+        "reference_declarator" => reference_inner(node).and_then(find_name_node_in_declarator),
         _ => None,
     }
 }
 
-fn find_function_declarator(node: Node) -> Option<Node> {
+pub(super) fn find_function_declarator(node: Node) -> Option<Node> {
     match node.kind() {
         "function_declarator" => Some(node),
         "pointer_declarator" | "parenthesized_declarator" => node
             .child_by_field_name("declarator")
             .and_then(find_function_declarator),
+        "reference_declarator" => reference_inner(node).and_then(find_function_declarator),
         _ => None,
     }
+}
+
+/// The declarator wrapped by a tree-sitter-cpp `reference_declarator`
+/// (`&x`, `&&f()`). It has no `declarator` field — the wrapped declarator is
+/// its only named child.
+fn reference_inner(node: Node) -> Option<Node> {
+    node.named_child(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -664,7 +701,7 @@ fn extract_visibility(node: Node, src: &[u8]) -> Option<String> {
     )
 }
 
-fn has_specifier(node: Node, src: &[u8], keyword: &str) -> bool {
+pub(super) fn has_specifier(node: Node, src: &[u8], keyword: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -677,7 +714,7 @@ fn has_specifier(node: Node, src: &[u8], keyword: &str) -> bool {
     false
 }
 
-fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
+pub(super) fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
     let mut doc_lines: Vec<String> = Vec::new();
     let mut sibling = node.prev_sibling();
     while let Some(sib) = sibling {
@@ -722,6 +759,21 @@ fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
 }
 
 fn extract_fn_language_attrs(node: Node, src: &[u8], declarator: Node) -> Option<String> {
+    let attrs = fn_language_attrs(node, src, declarator);
+    Some(
+        serde_json::to_string(&attrs)
+            .expect("invariant: a string-keyed JSON map always serializes"),
+    )
+}
+
+/// The C function attributes (`returns_ptr`, `is_static`, `is_variadic`, …)
+/// as a map, so the C++ method extractor can add its own keys before
+/// serializing.
+pub(super) fn fn_language_attrs(
+    node: Node,
+    src: &[u8],
+    declarator: Node,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut attrs = serde_json::Map::new();
 
     if has_pointer_return(declarator) {
@@ -769,7 +821,7 @@ fn extract_fn_language_attrs(node: Node, src: &[u8], declarator: Node) -> Option
         }
     }
 
-    Some(serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".into()))
+    attrs
 }
 
 fn has_pointer_return(declarator: Node) -> bool {
@@ -874,8 +926,11 @@ fn is_definition_name(node: Node) -> bool {
         "preproc_function_def"
         | "preproc_def"
         | "struct_specifier"
+        | "class_specifier"
+        | "union_specifier"
         | "enum_specifier"
-        | "enumerator" => parent
+        | "enumerator"
+        | "alias_declaration" => parent
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id()),
         "type_definition" | "parameter_declaration" | "field_declaration" | "declaration" => parent
